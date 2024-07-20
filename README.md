@@ -3,6 +3,13 @@
 [![Install with Conda](https://anaconda.org/bioconda/abismal/badges/platforms.svg)](https://anaconda.org/bioconda/abismal)
 [![Install with Conda](https://img.shields.io/conda/dn/bioconda/abismal?color=red&label=conda%20downloads&style=flat-square)](https://anaconda.org/bioconda/abismal)
 
+# Don't use this
+
+This is a fork of [abismal](https://github.com/smithlabcode/abismal)
+that I hacked up to use for a specific pipeline. Only use it if I
+asked you to. I need this fork to be public, but it's not intended for
+use outside a very specific situation.
+
 ## abismal ##
 
 **A**nother **Bis**ulfite **M**apping **Al**gorithm (abismal) is
