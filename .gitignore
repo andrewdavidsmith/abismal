@@ -5,6 +5,8 @@
 !src/*pp
 !m4
 !src/smithlab_cpp/*pp
+!src/bamxx
+!src/bamxx/*pp
 !Makefile
 !Makefile.am
 !configure.ac
