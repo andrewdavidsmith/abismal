@@ -1,4 +1,4 @@
-/* Copyright (C) 2018-2023 Andrew D. Smith and Guilherme Sena
+/* Copyright (C) 2018-2024 Andrew D. Smith and Guilherme Sena
  *
  * Authors: Andrew D. Smith and Guilherme Sena
  *
@@ -42,6 +42,8 @@
 #include "smithlab_os.hpp"
 #include "smithlab_utils.hpp"
 
+#include "bam_record_utils.hpp"
+
 using std::begin;
 using std::cerr;
 using std::cout;
@@ -76,6 +78,108 @@ typedef vector<element_t> PackedRead;  // 4-bit encoding of reads
 
 enum conversion_type { t_rich = false, a_rich = true };
 
+static const runtime_error bam_write_err{"error writing bam"};
+static int32_t max_frag_len = 10000;
+
+static inline void
+swap(bam_rec &a, bam_rec &b) {
+  std::swap(a.b, b.b);
+}
+
+static int32_t
+merge_mates(bam_rec &one, bam_rec &two, bam_rec &merged) {
+  if (!are_mates(one, two)) return -std::numeric_limits<int32_t>::max();
+
+  // arithmetic easier using base 0 so subtracting 1 from pos
+  const int one_s = get_pos(one);
+  const int one_e = get_endpos(one);
+  const int two_s = get_pos(two);
+  const int two_e = get_endpos(two);
+  assert(one_s >= 0 && two_s >= 0);
+
+  const int spacer = two_s - one_e;
+  if (spacer >= 0) {
+    /* fragments longer enough that there is space between them: this
+     * size of the spacer ("_") is determined based on the reference
+     * positions of the two ends, and here we assume "one" maps to
+     * positive genome strand.
+     *                               spacer
+     *                              <======>
+     * left                                                         right
+     * one_s                    one_e      two_s                    two_e
+     * [------------end1------------]______[------------end2------------]
+     */
+    merge_non_overlap(one, two, spacer, merged);
+  }
+  else {
+    const int head = two_s - one_s;
+    if (head >= 0) {
+      /* (Even if "head == 0" we will deal with it here.)
+       *
+       * CASE 1: head > 0
+       *
+       * fragment longer than or equal to the length of the left-most
+       * read, but shorter than twice the read length (hence spacer
+       * was < 0): this is determined by obtaining the size of the
+       * "head" in the diagram below: the portion of end1 that is not
+       * within [=]. If the read maps to the positive strand, this
+       * depends on the reference start of end2 minus the reference
+       * start of end1. For negative strand, this is reference start
+       * of end1 minus reference start of end2.
+       *
+       * <======= head =========>
+       *
+       * left                                             right
+       * one_s              two_s      one_e              two_e
+       * [------------end1------[======]------end2------------]
+       */
+      if (head > 0) { merge_overlap(one, two, head, merged); }
+      /* CASE 2: head == 0
+       *
+       * CASE 2A: one_e < two_e
+       * left                                             right
+       * one_s/two_s               one_e                  two_e
+       * [=========== end1/end2========]------ end2 ----------]
+       * keep "two"
+       *
+       * CASE 2B: one_e >= two_e
+       * left                                             right
+       * one_s/two_s               two_e                  one_e
+       * [=========== end1/end2========]------ end1 ----------]
+       * keep "one"
+       *
+       */
+      // *** ELSE ***
+      if (head == 0) {  // keep the end with more ref bases
+        keep_better_end(one, two, merged);
+      }
+    }
+    else {
+      /* dovetail fragments shorter than read length: this is
+       * identified if the above conditions are not satisfied, but
+       * there is still some overlap. The overlap will be at the 5'
+       * ends of reads, which in theory shouldn't happen unless the
+       * two ends are covering identical genomic intervals.
+       *
+       *                 <=== overlap ==>
+       * left                                       right
+       * two_s           one_s      two_e           one_e
+       * [--end2---------[==============]---------end1--]
+       */
+      const int overlap = two_e - one_s;
+      if (overlap > 0) { truncate_overlap(one, overlap, merged); }
+    }
+  }
+
+  // if merging two ends caused strange things in the cigar, fix them.
+  correct_cigar(merged);
+
+  return two_e - one_s;
+}
+
+/********Above are functions for merging pair-end reads********/
+
+
 static void
 print_with_time(const string &s) {
   auto tmp = system_clock::to_time_t(system_clock::now());
@@ -95,7 +199,138 @@ get_strand_code(const char strand, const conversion_type conv) {
           ((conv == a_rich) ? bsflags::read_is_a_rich : 0));
 }
 
+
+struct adaptor_trimmer {
+  adaptor_trimmer() {}
+  adaptor_trimmer(const string &adaptor, const double min_frac,
+                  const double min_ltrs)
+      : adaptor{adaptor}, min_frac{min_frac}, min_ltrs{min_ltrs},
+        n{static_cast<uint32_t>(adaptor.size())}, d_delta{1.0 - min_frac},
+        d_max_init{static_cast<double>(n) * d_delta} {}
+
+  adaptor_trimmer(const string &adaptor)
+    : adaptor{adaptor},
+      n{static_cast<uint32_t>(adaptor.size())}, d_delta{1.0 - min_frac},
+      d_max_init{static_cast<double>(n) * d_delta} {}
+
+  string adaptor{};
+  double min_frac{0.9};
+  double min_ltrs{1};
+  uint32_t n{};
+  double d_delta{};
+  double d_max_init{};
+
+  // Just the naive algorithm for string matching with bounded
+  // mismatches. I have not tested if this is any kind of bottleneck.
+  uint32_t
+  naive_matching(const string &read) const {
+    const uint32_t m = read.size();
+    const uint32_t i_lim1 = (n > m) ? 0 : m + 1 - n;
+    double d_max = d_max_init;
+
+    for (uint32_t i = 0; i < i_lim1; ++i) {
+      uint32_t d = 0;
+      uint32_t j = 0;
+      while (d <= d_max && j < n) {
+        d += (read[i + j] != adaptor[j]);
+        ++j;
+      }
+      if (d <= d_max)
+        return i;
+    }
+
+    const uint32_t i_lim2 = m + 1 - min_ltrs;
+    uint32_t j_lim = m - i_lim1;
+    for (uint32_t i = i_lim1; i < i_lim2; ++i) {
+      d_max -= d_delta;
+      uint32_t d = 0;
+      uint32_t j = 0;
+      while (d <= d_max && j < j_lim) {
+        d += (read[i + j] != adaptor[j]);
+        ++j;
+      }
+      if (d <= d_max)
+        return i;
+      --j_lim;
+    }
+    return m;
+  }
+
+  // Find the positions in the read where quality scores indicate the
+  // read should be trimmed. This is copied from cutadapt source.
+  void
+  qual_trim(const string &qual,
+            int32_t cut_front,
+            int32_t cut_back,
+            uint32_t &start, uint32_t &stop) const {
+    const int32_t QUAL_BASE = 33; // assumes base quality starts at 33
+
+    /* ADS: COPIED FROM cutadapt SOURCE */
+    uint32_t n = static_cast<uint32_t>(qual.size());
+
+    //  find trim position for 5' end
+    start = 0;
+    int32_t s = 0;
+    int32_t max_qual = 0;
+
+    if (cut_front > 0) {
+      cut_front += QUAL_BASE;
+      for (auto i = 0u; i < n; ++i) {
+        s += (cut_front + QUAL_BASE) - static_cast<int32_t>(qual[i]);
+        if (s < 0)
+          break;
+        if (s > max_qual) {
+          max_qual = s;
+          start = i + 1;
+        }
+      }
+    }
+    // same for 3' end
+    stop = n;
+    max_qual = 0;
+    s = 0;
+    cut_back = cut_back + QUAL_BASE;
+    for (int32_t i = n - 1; i >= 0; --i) {
+      s += cut_back - static_cast<int32_t>(qual[i]);
+      if (s < 0) {
+        break;
+      }
+      if (s > max_qual) {
+        max_qual = s;
+        stop = i;
+      }
+    }
+    if (start >= stop) {
+      start = 0;
+      stop = 0;
+    }
+  }
+
+  void operator()(string &qual, string &read) const {
+    uint32_t qstart = 0;
+    uint32_t qstop = 0;
+    qual_trim(qual, 0, 20, qstart, qstop);
+    uint32_t nstart = read.find_first_not_of("N");
+    uint32_t nstop = read.find_last_not_of("N") + 1;
+    uint32_t stop = std::min(qstop, nstop);
+    uint32_t adaptor_start = naive_matching(read.substr(0, stop));
+    stop = std::min(stop, adaptor_start);
+    nstop = read.substr(0, stop).find_last_not_of("N") + 1;
+    stop = std::min(stop, nstop);
+    read.resize(nstop);
+    uint32_t start = std::min(std::max(qstart, nstart), stop);
+    read = read.substr(start, stop - start);
+  }
+  operator bool() const {
+    return n > 0;
+  }
+};
+
+
 struct ReadLoader {
+  ReadLoader(const string &fn, const string &adaptor):
+    cur_line{0}, filename{fn}, in{fn, "r"},
+    trimmer(adaptor) {}
   ReadLoader(const string &fn): cur_line{0}, filename{fn}, in{fn, "r"} {}
 
   bool good() const { return in; }
@@ -113,29 +348,35 @@ struct ReadLoader {
     size_t line_count = 0;
     const size_t num_lines_to_read = 4 * batch_size;
     string line;
+    string qual;
+    string read;
     while (line_count < num_lines_to_read && getline(in, line)) {
-      if (line_count % 4 == 0) {
+      if (line_count % 4 == 3) {
+        qual.swap(line);
+
+        // read too long, may pass the end of the genome
+        if (read.size() >= seed::padding_size)
+          throw runtime_error(
+            "found a read of size " + to_string(read.size()) +
+            ", which is too long. Maximum allowed read size = " +
+            to_string(seed::padding_size));
+
+        if (trimmer)
+          trimmer(qual, read);
+        if (read.size() < min_read_length ||
+            count_if(cbegin(read), cend(read),
+                     [](const char c) { return c != 'N'; }) < min_read_length)
+          read.clear();
+        reads.emplace_back(read);
+      }
+      else if (line_count % 4 == 0) {
         if (line.empty())
           throw runtime_error("file " + filename + " contains an empty " +
                               "read name at line " + to_string(cur_line));
         names.emplace_back(line.substr(1, line.find_first_of(" \t") - 1));
       }
       else if (line_count % 4 == 1) {
-        // read too long, may pass the end of the genome
-        if (line.size() >= seed::padding_size)
-          throw runtime_error(
-            "found a read of size " + to_string(line.size()) +
-            ", which is too long. Maximum allowed read size = " +
-            to_string(seed::padding_size));
-
-        if (count_if(cbegin(line), cend(line),
-                     [](const char c) { return c != 'N'; }) < min_read_length)
-          line.clear();
-        else {
-          while (line.back() == 'N') line.pop_back();      // remove Ns from 3'
-          line = line.substr(line.find_first_of("ACGT"));  // removes Ns from 5'
-        }
-        reads.emplace_back(line);
+        read.swap(line);
       }
       ++line_count;
       ++cur_line;
@@ -145,6 +386,7 @@ struct ReadLoader {
   uint32_t cur_line;
   string filename;
   bamxx::bgzf_file in;
+  adaptor_trimmer trimmer;
 
   static const size_t batch_size;
   static const uint32_t min_read_length;
@@ -339,11 +581,6 @@ struct se_candidates {
 };
 
 const uint32_t se_candidates::max_size = 50u;
-
-static inline bool
-cigar_eats_ref(const uint32_t c) {
-  return bam_cigar_type(bam_cigar_op(c)) & 2;
-}
 
 static inline uint32_t
 cigar_rseq_ops(const bam_cigar_t &cig) {
@@ -1453,8 +1690,11 @@ map_single_ended(const bool show_progress, const bool allow_ambig,
 #pragma omp critical
     {
       for (size_t i = 0; i < n_reads; ++i) {
-        if (valid_bam_rec(mr[i]) && !out.write(hdr, mr[i]))
-          throw runtime_error("failed to write bam");
+        if (valid_bam_rec(mr[i])) {
+          if (is_a_rich(mr[i])) flip_conversion(mr[i]);
+          if (!out.write(hdr, mr[i]))
+            throw runtime_error("failed to write bam");
+        }
       }
     }
     for (size_t i = 0; i < n_reads; ++i) {
@@ -1565,8 +1805,11 @@ map_single_ended_rand(const bool show_progress, const bool allow_ambig,
 #pragma omp critical
     {
       for (size_t i = 0; i < n_reads; ++i)
-        if (valid_bam_rec(mr[i]) && !out.write(hdr, mr[i]))
-          throw runtime_error("failed to write bam");
+        if (valid_bam_rec(mr[i])) {
+          if (is_a_rich(mr[i])) flip_conversion(mr[i]);
+          if (!out.write(hdr, mr[i]))
+            throw runtime_error("failed to write bam");
+        }
     }
     for (size_t i = 0; i < n_reads; ++i) {
       if (valid_bam_rec(mr[i])) reset_bam_rec(mr[i]);
@@ -1590,11 +1833,12 @@ format_time_in_sec(const double t) {
 }
 
 template<const conversion_type conv, const bool random_pbat> static void
-run_single_ended(const bool show_progress, const bool allow_ambig,
+run_single_ended(const string &adaptor_sequence,
+                 const bool show_progress, const bool allow_ambig,
                  const string &reads_file, const AbismalIndex &abismal_index,
                  se_map_stats &se_stats, bamxx::bam_header &hdr,
                  bamxx::bam_out &out) {
-  ReadLoader rl(reads_file);
+  ReadLoader rl(reads_file, adaptor_sequence);
   ProgressBar progress(get_filesize(reads_file), "mapping reads");
 
   const auto start_time = omp_get_wtime();
@@ -1937,10 +2181,32 @@ map_paired_ended(const bool show_progress, const bool allow_ambig,
 #pragma omp critical
     {
       for (size_t i = 0; i < n_reads; ++i) {
-        if (valid_bam_rec(mr1[i]) && !out.write(hdr, mr1[i]))
-          throw runtime_error("failed to write bam");
-        if (valid_bam_rec(mr2[i]) && !out.write(hdr, mr2[i]))
-          throw runtime_error("failed to write bam");
+        if (valid_bam_rec(mr1[i]) && valid_bam_rec(mr2[i])) {
+          // below: essentially check for dovetail
+          if (!bam_is_rev(mr2[i])) swap(mr1[i], mr2[i]);
+          bam_rec merged;
+          const int32_t frag_len = merge_mates(mr1[i], mr2[i], merged);
+          if (frag_len > 0 && frag_len < max_frag_len) {
+            if (is_a_rich(merged)) flip_conversion(merged);
+            if (!out.write(hdr, merged)) throw bam_write_err;
+          }
+          else {
+            if (is_a_rich(mr1[i])) flip_conversion(mr1[i]);
+            if (!out.write(hdr, mr1[i])) throw bam_write_err;
+            if (is_a_rich(mr2[i])) flip_conversion(mr2[i]);
+            if (!out.write(hdr, mr2[i])) throw bam_write_err;
+          }
+        }
+        else {
+          if (valid_bam_rec(mr1[i])) {
+            if (is_a_rich(mr1[i])) flip_conversion(mr1[i]);
+            if (!out.write(hdr, mr1[i])) throw bam_write_err;
+          }
+          if (valid_bam_rec(mr2[i])) {
+            if (is_a_rich(mr2[i])) flip_conversion(mr2[i]);
+            if (!out.write(hdr, mr2[i])) throw bam_write_err;
+          }
+        }
       }
     }
     for (size_t i = 0; i < n_reads; ++i) {
@@ -2112,10 +2378,32 @@ map_paired_ended_rand(const bool show_progress, const bool allow_ambig,
 #pragma omp critical
     {
       for (size_t i = 0; i < n_reads; ++i) {
-        if (valid_bam_rec(mr1[i]) && !out.write(hdr, mr1[i]))
-          throw runtime_error("failed to write bam");
-        if (valid_bam_rec(mr2[i]) && !out.write(hdr, mr2[i]))
-          throw runtime_error("failed to write bam");
+        if (valid_bam_rec(mr1[i]) && valid_bam_rec(mr2[i])) {
+          // below: essentially check for dovetail
+          if (!bam_is_rev(mr2[i])) swap(mr1[i], mr2[i]);
+          bam_rec merged;
+          const auto frag_len = merge_mates(mr1[i], mr2[i], merged);
+          if (frag_len > 0 && frag_len < max_frag_len) {
+            if (is_a_rich(merged)) flip_conversion(merged);
+            if (!out.write(hdr, merged)) throw bam_write_err;
+          }
+          else {
+            if (is_a_rich(mr1[i])) flip_conversion(mr1[i]);
+            if (!out.write(hdr, mr1[i])) throw bam_write_err;
+            if (is_a_rich(mr2[i])) flip_conversion(mr2[i]);
+            if (!out.write(hdr, mr2[i])) throw bam_write_err;
+          }
+        }
+        else {
+          if (valid_bam_rec(mr1[i])) {
+            if (is_a_rich(mr1[i])) flip_conversion(mr1[i]);
+            if (!out.write(hdr, mr1[i])) throw bam_write_err;
+          }
+          if (valid_bam_rec(mr2[i])) {
+            if (is_a_rich(mr2[i])) flip_conversion(mr2[i]);
+            if (!out.write(hdr, mr2[i])) throw bam_write_err;
+          }
+        }
       }
     }
     for (size_t i = 0; i < n_reads; ++i) {
@@ -2135,12 +2423,13 @@ map_paired_ended_rand(const bool show_progress, const bool allow_ambig,
 }
 
 template<const conversion_type conv, const bool random_pbat> static void
-run_paired_ended(const bool show_progress, const bool allow_ambig,
+run_paired_ended(const string &adaptor_sequence,
+                 const bool show_progress, const bool allow_ambig,
                  const string &reads_file1, const string &reads_file2,
                  const AbismalIndex &abismal_index, pe_map_stats &pe_stats,
                  bamxx::bam_header &hdr, bamxx::bam_out &out) {
-  ReadLoader rl1(reads_file1);
-  ReadLoader rl2(reads_file2);
+  ReadLoader rl1(reads_file1, adaptor_sequence);
+  ReadLoader rl2(reads_file2, adaptor_sequence);
   ProgressBar progress(get_filesize(reads_file1), "mapping reads");
 
   double start_time = omp_get_wtime();
@@ -2222,6 +2511,9 @@ abismal(int argc, const char **argv) {
     string outfile("-");
     string stats_outfile = "";
 
+    string adaptor_sequence{"AGATCGGAAGAGC"};
+    bool trim_adaptors = false;
+
     /****************** COMMAND LINE OPTIONS ********************/
     OptionParser opt_parse(strip_path(argv[0]), "map bisulfite converted reads",
                            "<reads-fq1> [<reads-fq2>]");
@@ -2244,6 +2536,10 @@ abismal(int argc, const char **argv) {
                       false, se_element::valid_frac);
     opt_parse.add_opt("ambig", 'a', "report a posn for ambiguous mappers",
                       false, allow_ambig);
+    opt_parse.add_opt("trim", '\0', "trim adaptors from reads",
+                      false, trim_adaptors);
+    opt_parse.add_opt("adap", '\0', "use this as adaptor",
+                      false, adaptor_sequence);
     opt_parse.add_opt("pbat", 'P', "input follows the PBAT protocol", false,
                       pbat_mode);
     opt_parse.add_opt("random-pbat", 'R', "input follows random PBAT protocol",
@@ -2282,6 +2578,8 @@ abismal(int argc, const char **argv) {
            << endl;
       return EXIT_SUCCESS;
     }
+    if (!trim_adaptors)
+      adaptor_sequence.clear();
 
     const string reads_file = leftover_args.front();
     string reads_file2;
@@ -2382,26 +2680,26 @@ abismal(int argc, const char **argv) {
 
     if (reads_file2.empty()) {
       if (GA_conversion || pbat_mode)
-        run_single_ended<a_rich, false>(show_progress, allow_ambig, reads_file,
+        run_single_ended<a_rich, false>(adaptor_sequence, show_progress, allow_ambig, reads_file,
                                         abismal_index, se_stats, hdr, out);
       else if (random_pbat)
-        run_single_ended<t_rich, true>(show_progress, allow_ambig, reads_file,
+        run_single_ended<t_rich, true>(adaptor_sequence, show_progress, allow_ambig, reads_file,
                                        abismal_index, se_stats, hdr, out);
       else
-        run_single_ended<t_rich, false>(show_progress, allow_ambig, reads_file,
+        run_single_ended<t_rich, false>(adaptor_sequence, show_progress, allow_ambig, reads_file,
                                         abismal_index, se_stats, hdr, out);
     }
     else {
       if (pbat_mode)
-        run_paired_ended<a_rich, false>(show_progress, allow_ambig, reads_file,
+        run_paired_ended<a_rich, false>(adaptor_sequence, show_progress, allow_ambig, reads_file,
                                         reads_file2, abismal_index, pe_stats,
                                         hdr, out);
       else if (random_pbat)
-        run_paired_ended<t_rich, true>(show_progress, allow_ambig, reads_file,
+        run_paired_ended<t_rich, true>(adaptor_sequence, show_progress, allow_ambig, reads_file,
                                        reads_file2, abismal_index, pe_stats,
                                        hdr, out);
       else
-        run_paired_ended<t_rich, false>(show_progress, allow_ambig, reads_file,
+        run_paired_ended<t_rich, false>(adaptor_sequence, show_progress, allow_ambig, reads_file,
                                         reads_file2, abismal_index, pe_stats,
                                         hdr, out);
     }
