@@ -2079,6 +2079,7 @@ main(int argc, const char **argv) {
     string outfile{};
 
     double mapping_cutoff_for_quality{0.1};
+    double min_fraction_mapping_for_protocol{0.8};
 
     string adaptor_sequence{"AGATCGGAAGAGC"};
     bool trim_adaptors = false;
@@ -2094,6 +2095,8 @@ main(int argc, const char **argv) {
                       "max candidates per seed "
                       "(0 = use index estimate)",
                       false, max_candidates);
+    opt_parse.add_opt("fraction", 'f', "min fraction mapping for protocol",
+                      false, min_fraction_mapping_for_protocol);
     opt_parse.add_opt("min-map", 'M', "min mapping required", false,
                       mapping_cutoff_for_quality);
     opt_parse.add_opt("min-frag", 'l', "min fragment size (pe mode)", false,
@@ -2275,9 +2278,10 @@ main(int argc, const char **argv) {
                           : pe_stats_pbat.read_pairs_mapped_fraction;
     const double total = wgbs + pbat;
     const string quality_check =
-      (total/100.0 < mapping_cutoff_for_quality) ? "fail" : "pass";
-    const string guess = (wgbs/total > 0.9) ? "wgbs" :
-      (pbat/total > 0.9 ? "pbat" : "rpbat");
+      (total / 100.0 < mapping_cutoff_for_quality) ? "fail" : "pass";
+    const string guess = (wgbs / total > min_fraction_mapping_for_protocol)
+                           ? "wgbs"
+                           : (pbat / total > 0.9 ? "pbat" : "rpbat");
     // clang-format off
     out << '{'
         << format_key_value("wgbs_fraction_mapped", wgbs)
