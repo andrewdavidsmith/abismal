@@ -2279,9 +2279,10 @@ main(int argc, const char **argv) {
     const double total = wgbs + pbat;
     const string quality_check =
       (total / 100.0 < mapping_cutoff_for_quality) ? "fail" : "pass";
-    const string guess = (wgbs / total > min_fraction_mapping_for_protocol)
-                           ? "wgbs"
-                           : (pbat / total > 0.9 ? "pbat" : "rpbat");
+    const string guess =
+      (wgbs / total > min_fraction_mapping_for_protocol)
+        ? "wgbs"
+        : (pbat / total > min_fraction_mapping_for_protocol ? "pbat" : "rpbat");
     // clang-format off
     out << '{'
         << format_key_value("wgbs_fraction_mapped", wgbs)
