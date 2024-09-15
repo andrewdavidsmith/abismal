@@ -180,12 +180,13 @@ struct adaptor_trimmer {
 
 template<typename T>
 struct ReadLoaderBase {
-  ReadLoaderBase(const string &fn, const string &adaptor):
-    cur_line{0}, filename{fn}, in{fn, "r"},
+  ReadLoaderBase(const string &fn, const string &adaptor, const uint32_t n_reads):
+    cur_line{0}, n_reads{n_reads}, filename{fn}, in{fn, "r"},
     trimmer(adaptor) {}
-  ReadLoaderBase(const string &fn): cur_line{0}, filename{fn}, in{fn, "r"} {}
+  ReadLoaderBase(const string &fn, const uint32_t n_reads):
+    cur_line{0}, n_reads{n_reads}, filename{fn}, in{fn, "r"} {}
 
-  bool good() const { return in; }
+  bool good() const { return bool(in) && get_current_read() < n_reads; }
 
   operator bool() const { return in; }
 
@@ -199,7 +200,8 @@ struct ReadLoaderBase {
     static_cast<T*>(this)->load_reads_impl(reads);
   }
 
-  uint32_t cur_line;
+  uint32_t cur_line{};
+  uint32_t n_reads{};
   string filename;
   bamxx::bgzf_file in;
   adaptor_trimmer trimmer;
@@ -211,9 +213,12 @@ struct ReadLoaderBase {
 };
 
 struct ReadLoaderFastq : ReadLoaderBase<ReadLoaderFastq> {
-  ReadLoaderFastq(const string &fn, const string &adaptor) :
-    ReadLoaderBase<ReadLoaderFastq>(fn, adaptor) {}
-  ReadLoaderFastq(const string &fn) : ReadLoaderBase<ReadLoaderFastq>(fn) {}
+  ReadLoaderFastq(const string &fn, const string &adaptor,
+                  const uint32_t n_reads)
+      : ReadLoaderBase<ReadLoaderFastq>(fn, adaptor, n_reads) {}
+
+  ReadLoaderFastq(const string &fn, const uint32_t n_reads)
+      : ReadLoaderBase<ReadLoaderFastq>(fn, n_reads) {}
 
   size_t get_current_read_impl() const { return cur_line / 4; }
   void load_reads_impl(vector<string> &reads) {
@@ -223,7 +228,7 @@ struct ReadLoaderFastq : ReadLoaderBase<ReadLoaderFastq> {
     const size_t num_lines_to_read = 4 * batch_size;
     string line;
     string read;
-    while (line_count < num_lines_to_read && getline(in, line)) {
+    while (line_count < num_lines_to_read && getline(in, line) && cur_line < n_reads*4) {
       if (line_count % 4 == 3) {
         // read too long, may pass the end of the genome
         if (read.size() >= seed::padding_size)
@@ -255,9 +260,10 @@ struct ReadLoaderFastq : ReadLoaderBase<ReadLoaderFastq> {
 };
 
 struct ReadLoaderFasta : ReadLoaderBase<ReadLoaderFasta> {
-  ReadLoaderFasta(const string &fn, const string &adaptor) :
-    ReadLoaderBase<ReadLoaderFasta>(fn, adaptor) {}
-  ReadLoaderFasta(const string &fn) : ReadLoaderBase<ReadLoaderFasta>(fn) {}
+  ReadLoaderFasta(const string &fn, const string &adaptor, const uint32_t n_reads) :
+    ReadLoaderBase<ReadLoaderFasta>(fn, adaptor, n_reads) {}
+  ReadLoaderFasta(const string &fn, const uint32_t n_reads) :
+    ReadLoaderBase<ReadLoaderFasta>(fn, n_reads) {}
 
   size_t get_current_read_impl() const { return cur_line / 2; }
   void load_reads_impl(vector<string> &reads) {
@@ -267,7 +273,7 @@ struct ReadLoaderFasta : ReadLoaderBase<ReadLoaderFasta> {
     const size_t num_lines_to_read = 2 * batch_size;
     string line;
     string read;
-    while (line_count < num_lines_to_read && getline(in, line)) {
+    while (line_count < num_lines_to_read && getline(in, line) && cur_line < n_reads*2) {
       if (line_count % 2 == 1) {
         read.swap(line);
         // read too long, may pass the end of the genome
@@ -1550,10 +1556,10 @@ map_single_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl,
 
 template<const conversion_type conv, const bool random_pbat,
          typename ReadLoader = ReadLoaderFastq> static void
-run_single_ended(const string &adaptor_sequence,
+run_single_ended(const uint32_t n_reads, const string &adaptor_sequence,
                  const string &reads_file, const AbismalIndex &abismal_index,
                  se_map_stats &se_stats) {
-  ReadLoader rl(reads_file, adaptor_sequence);
+  ReadLoader rl(reads_file, adaptor_sequence, n_reads);
 
 #pragma omp parallel for
   for (int i = 0; i < omp_get_num_threads(); ++i) {
@@ -2024,11 +2030,11 @@ map_paired_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl1,
 
 template<const conversion_type conv, const bool random_pbat, typename ReadLoader = ReadLoaderFastq>
 static void
-run_paired_ended(const string &adaptor_sequence,
+run_paired_ended(const uint32_t n_reads, const string &adaptor_sequence,
                  const string &reads_file1, const string &reads_file2,
                  const AbismalIndex &abismal_index, pe_map_stats &pe_stats) {
-  ReadLoader rl1(reads_file1, adaptor_sequence);
-  ReadLoader rl2(reads_file2, adaptor_sequence);
+  ReadLoader rl1(reads_file1, adaptor_sequence, n_reads);
+  ReadLoader rl2(reads_file2, adaptor_sequence, n_reads);
 
 #pragma omp parallel for
   for (int i = 0; i < omp_get_num_threads(); ++i) {
@@ -2074,6 +2080,7 @@ main(int argc, const char **argv) {
   try {
     bool VERBOSE = false;
     int n_threads = 1;
+    uint32_t n_reads{10000};
     uint32_t max_candidates = 0;
     string index_file{};
     string outfile{};
@@ -2091,6 +2098,8 @@ main(int argc, const char **argv) {
     opt_parse.add_opt("index", 'i', "index file", true, index_file);
     opt_parse.add_opt("output", 'o', "output file (json)", false,
                       outfile);
+    opt_parse.add_opt("n-reads", 'n', "number of reads to consider",
+                      false, n_reads);
     opt_parse.add_opt("max-candidates", 'c',
                       "max candidates per seed "
                       "(0 = use index estimate)",
@@ -2215,21 +2224,21 @@ main(int argc, const char **argv) {
       if (reads_file2.empty()) {
         if (VERBOSE)
           print_with_time("running pbat");
-        run_single_ended<a_rich, false, TT>(adaptor_sequence, reads_file,
+        run_single_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
                                             abismal_index, se_stats_pbat);
         if (VERBOSE)
           print_with_time("running wgbs");
-        run_single_ended<t_rich, false, TT>(adaptor_sequence, reads_file,
+        run_single_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
                                             abismal_index, se_stats_wgbs);
       }
       else {
         if (VERBOSE)
           print_with_time("running pbat");
-        run_paired_ended<a_rich, false, TT>(adaptor_sequence, reads_file,
+        run_paired_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
                                             reads_file2, abismal_index, pe_stats_pbat);
         if (VERBOSE)
           print_with_time("running wgbs");
-        run_paired_ended<t_rich, false, TT>(adaptor_sequence, reads_file,
+        run_paired_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
                                             reads_file2, abismal_index, pe_stats_wgbs);
       }
     }
@@ -2238,21 +2247,21 @@ main(int argc, const char **argv) {
       if (reads_file2.empty()) {
         if (VERBOSE)
           print_with_time("running pbat");
-        run_single_ended<a_rich, false, TT>(adaptor_sequence, reads_file,
+        run_single_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
                                             abismal_index, se_stats_pbat);
         if (VERBOSE)
           print_with_time("running wgbs");
-        run_single_ended<t_rich, false, TT>(adaptor_sequence, reads_file,
+        run_single_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
                                             abismal_index, se_stats_wgbs);
       }
       else {
         if (VERBOSE)
           print_with_time("running pbat");
-        run_paired_ended<a_rich, false, TT>(adaptor_sequence, reads_file,
+        run_paired_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
                                             reads_file2, abismal_index, pe_stats_pbat);
         if (VERBOSE)
           print_with_time("running wgbs");
-        run_paired_ended<t_rich, false, TT>(adaptor_sequence, reads_file,
+        run_paired_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
                                             reads_file2, abismal_index, pe_stats_wgbs);
       }
     }
