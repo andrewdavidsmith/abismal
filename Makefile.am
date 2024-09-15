@@ -49,6 +49,7 @@ noinst_LIBRARIES = libabismal.a
 
 libabismal_a_SOURCES = \
 	src/abismal.cpp \
+	src/guessprotocol.cpp \
 	src/abismalidx.cpp \
 	src/AbismalIndex.cpp \
 	src/bam_record_utils.cpp \
@@ -68,8 +69,9 @@ libabismal_a_SOURCES += \
 
 LDADD = libabismal.a src/smithlab_cpp/libsmithlab_cpp.a
 
-bin_PROGRAMS = abismal abismalidx simreads
+bin_PROGRAMS = abismal abismalidx simreads guessprotocol
 abismal_SOURCES = src/abismal_main.cpp
+guessprotocol_SOURCES = src/guessprotocol.cpp
 abismalidx_SOURCES = src/abismalidx_main.cpp
 simreads_SOURCES = src/simreads_main.cpp
 
