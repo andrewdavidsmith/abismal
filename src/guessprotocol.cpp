@@ -2275,7 +2275,7 @@ main(int argc, const char **argv) {
                           : pe_stats_pbat.read_pairs_mapped_fraction;
     const double total = wgbs + pbat;
     const string quality_check =
-      (total < mapping_cutoff_for_quality) ? "fail" : "pass";
+      (total/100.0 < mapping_cutoff_for_quality) ? "fail" : "pass";
     const string guess = (wgbs/total > 0.9) ? "wgbs" :
       (pbat/total > 0.9 ? "pbat" : "rpbat");
     // clang-format off
