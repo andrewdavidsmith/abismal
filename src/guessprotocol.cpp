@@ -30,6 +30,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <type_traits>
 
 #include "AbismalAlign.hpp"
 #include "AbismalIndex.hpp"
@@ -1393,13 +1394,11 @@ map_single_ended(const AbismalIndex &abismal_index, ReadLoader &rl,
   vector<string> reads;
   vector<bam_cigar_t> cigar;
   vector<se_element> bests;
-  vector<bam_rec> mr;
 
   reads.reserve(ReadLoader::batch_size);
 
   cigar.resize(ReadLoader::batch_size);
   bests.resize(ReadLoader::batch_size);
-  mr.resize(ReadLoader::batch_size);
 
   // pre-allocated variabes used idependently in each read
   Read pread, pread_rc;
@@ -1451,14 +1450,7 @@ map_single_ended(const AbismalIndex &abismal_index, ReadLoader &rl,
           bests[i].reset();
       }
     }
-    // #pragma omp critical
-    //     {
-    for (size_t i = 0; i < n_reads; ++i)
-      if (valid_bam_rec(mr[i]) && is_a_rich(mr[i]))
-        flip_conversion(mr[i]);
-    //    }
     for (size_t i = 0; i < n_reads; ++i) {
-      if (valid_bam_rec(mr[i])) reset_bam_rec(mr[i]);
       se_stats.update(reads[i], cigar[i], bests[i]);
       cigar[i].clear();
     }
@@ -1484,12 +1476,10 @@ map_single_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl,
   vector<string> reads;
   vector<bam_cigar_t> cigar;
   vector<se_element> bests;
-  vector<bam_rec> mr;
 
   reads.reserve(ReadLoader::batch_size);
   cigar.resize(ReadLoader::batch_size);
   bests.resize(ReadLoader::batch_size);
-  mr.resize(ReadLoader::batch_size);
 
   // GS: pre-allocated variables used once per read
   // and not used for reporting
@@ -1551,14 +1541,7 @@ map_single_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl,
           bests[i].reset();
       }
     }
-    // #pragma omp critical
-    //     {
-    for (size_t i = 0; i < n_reads; ++i)
-      if (valid_bam_rec(mr[i]) && is_a_rich(mr[i]))
-        flip_conversion(mr[i]);
-    //    }
     for (size_t i = 0; i < n_reads; ++i) {
-      if (valid_bam_rec(mr[i])) reset_bam_rec(mr[i]);
       se_stats.update(reads[i], cigar[i], bests[i]);
       cigar[i].clear();
     }
@@ -1785,8 +1768,6 @@ map_paired_ended(const AbismalIndex &abismal_index, ReadLoader &rl1,
   vector<pe_element> bests;
   vector<se_element> bests_se1;
   vector<se_element> bests_se2;
-  vector<bam_rec> mr1;
-  vector<bam_rec> mr2;
 
   reads1.reserve(ReadLoader::batch_size);
   cigar1.resize(ReadLoader::batch_size);
@@ -1797,9 +1778,6 @@ map_paired_ended(const AbismalIndex &abismal_index, ReadLoader &rl1,
   bests.resize(ReadLoader::batch_size);
   bests_se1.resize(ReadLoader::batch_size);
   bests_se2.resize(ReadLoader::batch_size);
-
-  mr1.resize(ReadLoader::batch_size);
-  mr2.resize(ReadLoader::batch_size);
 
   // GS: pre-allocated variables used once per read
   // and not used for reporting
@@ -1891,8 +1869,6 @@ map_paired_ended(const AbismalIndex &abismal_index, ReadLoader &rl1,
                     bests_se1[i], bests_se2[i]);
     }
     for (size_t i = 0; i < n_reads; ++i) {
-      if (valid_bam_rec(mr1[i])) reset_bam_rec(mr1[i]);
-      if (valid_bam_rec(mr2[i])) reset_bam_rec(mr2[i]);
       pe_stats.update(reads1[i], reads2[i], cigar1[i], cigar2[i],
                       bests[i], bests_se1[i], bests_se2[i]);
       cigar1[i].clear();
@@ -1926,8 +1902,6 @@ map_paired_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl1,
   vector<pe_element> bests;
   vector<se_element> bests_se1;
   vector<se_element> bests_se2;
-  vector<bam_rec> mr1;
-  vector<bam_rec> mr2;
 
   reads1.reserve(ReadLoader::batch_size);
   cigar1.resize(ReadLoader::batch_size);
@@ -1938,9 +1912,6 @@ map_paired_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl1,
   bests.resize(ReadLoader::batch_size);
   bests_se1.resize(ReadLoader::batch_size);
   bests_se2.resize(ReadLoader::batch_size);
-
-  mr1.resize(ReadLoader::batch_size);
-  mr2.resize(ReadLoader::batch_size);
 
   Read pread1_t, pread1_t_rc, pread2_t, pread2_t_rc;
   Read pread1_a, pread1_a_rc, pread2_a, pread2_a_rc;
@@ -2085,12 +2056,16 @@ is_fasta_file(const string &filename) {
   return line[0] == '>';
 }
 
-
 template<typename T>
 static string
 format_key_value(const string key, const T value) {
   std::ostringstream oss;
-  oss << std::quoted(key) << ':' << value;
+  oss << std::quoted(key) << ':';
+  if constexpr (std::is_same<T, string>::value)
+                 oss << std::quoted(value);
+  else
+    oss << value;
+
   return oss.str();
 }
 
@@ -2102,6 +2077,8 @@ main(int argc, const char **argv) {
     uint32_t max_candidates = 0;
     string index_file{};
     string outfile{};
+
+    double mapping_cutoff_for_quality{0.1};
 
     string adaptor_sequence{"AGATCGGAAGAGC"};
     bool trim_adaptors = false;
@@ -2117,6 +2094,8 @@ main(int argc, const char **argv) {
                       "max candidates per seed "
                       "(0 = use index estimate)",
                       false, max_candidates);
+    opt_parse.add_opt("min-map", 'M', "min mapping required", false,
+                      mapping_cutoff_for_quality);
     opt_parse.add_opt("min-frag", 'l', "min fragment size (pe mode)", false,
                       pe_element::min_dist);
     opt_parse.add_opt("max-frag", 'L', "max fragment size (pe mode)", false,
@@ -2283,16 +2262,23 @@ main(int argc, const char **argv) {
     pe_stats_pbat.assign_values();
     pe_stats_rpbat.assign_values();
 
-    std::ofstream out(outfile);
+    std::ofstream of;
+    if (!outfile.empty()) of.open(outfile);
+    std::ostream out(outfile.empty() ? std::cout.rdbuf() : of.rdbuf());
     if (!out) throw runtime_error("failed to open output file: " + outfile);
 
-    const double wgbs = reads_file2.empty() ?
-      se_stats_wgbs.reads_mapped_fraction :
-      pe_stats_wgbs.read_pairs_mapped_fraction;
-    const double pbat = reads_file2.empty() ?
-      se_stats_pbat.reads_mapped_fraction :
-      pe_stats_pbat.read_pairs_mapped_fraction;
+    const double wgbs = reads_file2.empty()
+                          ? se_stats_wgbs.reads_mapped_fraction
+                          : pe_stats_wgbs.read_pairs_mapped_fraction;
+    const double pbat = reads_file2.empty()
+                          ? se_stats_pbat.reads_mapped_fraction
+                          : pe_stats_pbat.read_pairs_mapped_fraction;
     const double total = wgbs + pbat;
+    const string quality_check =
+      (total < mapping_cutoff_for_quality) ? "fail" : "pass";
+    const string guess = (wgbs/total > 0.9) ? "wgbs" :
+      (pbat/total > 0.9 ? "pbat" : "rpbat");
+    // clang-format off
     out << '{'
         << format_key_value("wgbs_fraction_mapped", wgbs)
         << ','
@@ -2301,8 +2287,13 @@ main(int argc, const char **argv) {
         << format_key_value("wgbs_proportion", wgbs/total)
         << ','
         << format_key_value("pbat_proportion", pbat/total)
+        << ','
+        << format_key_value("quality_check", quality_check)
+        << ','
+        << format_key_value("protocol_guess", guess)
         << '}'
         << '\n';
+    // clang-format on
   }
   catch (const runtime_error &e) {
     cerr << e.what() << endl;
