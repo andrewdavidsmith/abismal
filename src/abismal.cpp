@@ -2941,13 +2941,12 @@ abismal(int argc, const char **argv) {
         stats_of << (reads_file2.empty() ? se_stats.tostring(guessed_protocol)
                      : pe_stats.tostring(guessed_protocol, allow_ambig));
       else
-        cerr << "failed to open stats output file: " << stats_outfile << endl;
-    }
-
-    if (remove_input_files) {
-      fs::remove(reads_file);
-      if (!reads_file2.empty())
-        fs::remove(reads_file2);
+        throw runtime_error("failed to open stats output file: " + stats_outfile);
+      if (remove_input_files) {
+        fs::remove(reads_file);
+        if (!reads_file2.empty())
+          fs::remove(reads_file2);
+      }
     }
   }
   catch (const runtime_error &e) {
