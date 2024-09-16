@@ -1076,7 +1076,7 @@ struct se_map_stats {
     percent_skipped = pct(skipped_reads, total_reads);
   }
 
-  string tostring(const size_t n_tabs = 0) {
+  string tostring(const string &protocol, const size_t n_tabs = 0) {
     static constexpr auto tab = "    ";
 
     assign_values();
@@ -1084,6 +1084,8 @@ struct se_map_stats {
     string t;
     for (size_t i = 0; i < n_tabs; ++i) t += tab;
     ostringstream oss;
+    if (!protocol.empty())
+      oss << t << "protocol: " << protocol << endl;
     // clang-format off
     oss << t << "total_reads: " << total_reads << endl
         << t << "mapped: " << endl
@@ -1224,12 +1226,15 @@ struct pe_map_stats {
     percent_skipped_pairs = pct(read_pairs_skipped, total_read_pairs_tmp);
   }
 
-  string tostring(const bool allow_ambig) {
+  string tostring(const string &protocol, const bool allow_ambig) {
     static string t = "    ";
 
     assign_values();
 
     ostringstream oss;
+
+    if (!protocol.empty())
+      oss << "protocol: " << protocol << endl;
     oss << "pairs:" << endl
         << t << "total_pairs: " << total_read_pairs << endl
         << t << "mapped:" << endl
@@ -1252,8 +1257,8 @@ struct pe_map_stats {
 
     if (!allow_ambig)
       oss << "mate1:" << endl
-          << end1_stats.tostring(1) << "mate2:" << endl
-          << end2_stats.tostring(1);
+          << end1_stats.tostring(string(), 1) << "mate2:" << endl
+          << end2_stats.tostring(string(), 1);
     return oss.str();
   }
 };
@@ -2833,6 +2838,7 @@ abismal(int argc, const char **argv) {
       abismal_index.max_candidates = max_candidates;
     }
 
+    string guessed_protocol;
     if (!wgbs_mode && !pbat_mode && !rpbat_mode) {
       print_with_time("guessing protocol");
       const auto protocol =
@@ -2842,12 +2848,11 @@ abismal(int argc, const char **argv) {
         wgbs_mode = true;
       else if (protocol == 1)
         pbat_mode = true;
-      else
+      else  // default is rpbat
         rpbat_mode = true;
-      if (VERBOSE) {
-        print_with_time("guessed protocol: " +
-                        string(protocol == 0 ? "wgbs" : protocol == 1 ? "pbat" : "rpbat"));
-      }
+      guessed_protocol = protocol == 0 ? "wgbs" : protocol == 1 ? "pbat" : "rpbat";
+      if (VERBOSE)
+        print_with_time("guessed protocol: " + guessed_protocol);
     }
 
     // avoiding opening the stats output file until mapping is done
@@ -2930,8 +2935,8 @@ abismal(int argc, const char **argv) {
     if (!stats_outfile.empty()) {
       std::ofstream stats_of(stats_outfile);
       if (stats_of)
-        stats_of << (reads_file2.empty() ? se_stats.tostring()
-                                         : pe_stats.tostring(allow_ambig));
+        stats_of << (reads_file2.empty() ? se_stats.tostring(guessed_protocol)
+                     : pe_stats.tostring(guessed_protocol, allow_ambig));
       else
         cerr << "failed to open stats output file: " << stats_outfile << endl;
     }
