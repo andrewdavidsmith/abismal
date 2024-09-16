@@ -2661,6 +2661,7 @@ abismal(int argc, const char **argv) {
 
     string adaptor_sequence{"AGATCGGAAGAGC"};
     bool trim_adaptors = false;
+    bool remove_input_files{false};
 
     /****************** COMMAND LINE OPTIONS ********************/
     OptionParser opt_parse(strip_path(argv[0]), "map bisulfite converted reads",
@@ -2696,6 +2697,8 @@ abismal(int argc, const char **argv) {
                       false, rpbat_mode);
     opt_parse.add_opt("a-rich", 'A', "indicates reads are a-rich (se mode)",
                       false, GA_conversion);
+    opt_parse.add_opt("remove-input", '\0', "remove input file on success",
+                      false, remove_input_files);
     opt_parse.add_opt("threads", 't', "number of threads", false, n_threads);
     opt_parse.add_opt("verbose", 'v', "print more run info", false, VERBOSE);
     vector<string> leftover_args;
@@ -2939,6 +2942,12 @@ abismal(int argc, const char **argv) {
                      : pe_stats.tostring(guessed_protocol, allow_ambig));
       else
         cerr << "failed to open stats output file: " << stats_outfile << endl;
+    }
+
+    if (remove_input_files) {
+      fs::remove(reads_file);
+      if (!reads_file2.empty())
+        fs::remove(reads_file2);
     }
   }
   catch (const runtime_error &e) {
