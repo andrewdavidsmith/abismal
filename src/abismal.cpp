@@ -2623,6 +2623,15 @@ get_reads_files(const string &dirname, const string &accession) -> vector<string
   if (size(filenames) == 1)
     return filenames;
 
+  if (size(filenames) > 2) {
+    // this is in case we have both a '.fastq' and also '_1.fastq' and
+    // '_2.fastq' because of --split-3
+    filenames.erase(std::remove_if(begin(filenames), end(filenames),
+                                   [](const string &s) {
+                                     return s.find('_') == string::npos;
+                                   }), end(filenames));
+  }
+
   if (size(filenames) != 2 || size(filenames.front()) != size(filenames.back()))
     return {};
 
