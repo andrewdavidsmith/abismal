@@ -188,7 +188,7 @@ struct ReadLoaderBase {
 
   bool good() const { return bool(in) && get_current_read() < n_reads; }
 
-  operator bool() const { return in; }
+  operator bool() const { return bool(in) && get_current_read() < n_reads; }
 
   size_t get_current_read() const {
     return static_cast<const T*>(this)->get_current_read_impl();
