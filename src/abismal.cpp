@@ -28,10 +28,10 @@
 #include <fstream>
 #include <iostream>
 #include <numeric>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <regex>
 
 #include "AbismalAlign.hpp"
 #include "AbismalIndex.hpp"
@@ -92,7 +92,8 @@ swap(bam_rec &a, bam_rec &b) {
 
 static int32_t
 merge_mates(bam_rec &one, bam_rec &two, bam_rec &merged) {
-  if (!are_mates(one, two)) return -std::numeric_limits<int32_t>::max();
+  if (!are_mates(one, two))
+    return -std::numeric_limits<int32_t>::max();
 
   // arithmetic easier using base 0 so subtracting 1 from pos
   const int one_s = get_pos(one);
@@ -137,7 +138,9 @@ merge_mates(bam_rec &one, bam_rec &two, bam_rec &merged) {
        * one_s              two_s      one_e              two_e
        * [------------end1------[======]------end2------------]
        */
-      if (head > 0) { merge_overlap(one, two, head, merged); }
+      if (head > 0) {
+        merge_overlap(one, two, head, merged);
+      }
       /* CASE 2: head == 0
        *
        * CASE 2A: one_e < two_e
@@ -171,7 +174,9 @@ merge_mates(bam_rec &one, bam_rec &two, bam_rec &merged) {
        * [--end2---------[==============]---------end1--]
        */
       const int overlap = two_e - one_s;
-      if (overlap > 0) { truncate_overlap(one, overlap, merged); }
+      if (overlap > 0) {
+        truncate_overlap(one, overlap, merged);
+      }
     }
   }
 
@@ -202,19 +207,17 @@ get_strand_code(const char strand, const conversion_type conv) {
           ((conv == a_rich) ? bsflags::read_is_a_rich : 0));
 }
 
-
 struct adaptor_trimmer {
   adaptor_trimmer() {}
   adaptor_trimmer(const string &adaptor, const double min_frac,
-                  const double min_ltrs)
-      : adaptor{adaptor}, min_frac{min_frac}, min_ltrs{min_ltrs},
-        n{static_cast<uint32_t>(adaptor.size())}, d_delta{1.0 - min_frac},
-        d_max_init{static_cast<double>(n) * d_delta} {}
+                  const double min_ltrs) :
+    adaptor{adaptor}, min_frac{min_frac}, min_ltrs{min_ltrs},
+    n{static_cast<uint32_t>(adaptor.size())}, d_delta{1.0 - min_frac},
+    d_max_init{static_cast<double>(n) * d_delta} {}
 
-  adaptor_trimmer(const string &adaptor)
-    : adaptor{adaptor},
-      n{static_cast<uint32_t>(adaptor.size())}, d_delta{1.0 - min_frac},
-      d_max_init{static_cast<double>(n) * d_delta} {}
+  adaptor_trimmer(const string &adaptor) :
+    adaptor{adaptor}, n{static_cast<uint32_t>(adaptor.size())},
+    d_delta{1.0 - min_frac}, d_max_init{static_cast<double>(n) * d_delta} {}
 
   string adaptor{};
   double min_frac{0.9};
@@ -225,8 +228,7 @@ struct adaptor_trimmer {
 
   // Just the naive algorithm for string matching with bounded
   // mismatches. I have not tested if this is any kind of bottleneck.
-  uint32_t
-  naive_matching(const string &read) const {
+  uint32_t naive_matching(const string &read) const {
     const uint32_t m = read.size();
     const uint32_t i_lim1 = (n > m) ? 0 : m + 1 - n;
     double d_max = d_max_init;
@@ -261,12 +263,9 @@ struct adaptor_trimmer {
 
   // Find the positions in the read where quality scores indicate the
   // read should be trimmed. This is copied from cutadapt source.
-  void
-  qual_trim(const string &qual,
-            int32_t cut_front,
-            int32_t cut_back,
-            uint32_t &start, uint32_t &stop) const {
-    const int32_t QUAL_BASE = 33; // assumes base quality starts at 33
+  void qual_trim(const string &qual, int32_t cut_front, int32_t cut_back,
+                 uint32_t &start, uint32_t &stop) const {
+    const int32_t QUAL_BASE = 33;  // assumes base quality starts at 33
 
     /* ADS: COPIED FROM cutadapt SOURCE */
     uint32_t n = static_cast<uint32_t>(qual.size());
@@ -330,13 +329,14 @@ struct adaptor_trimmer {
     // qual_trim(qual, 0, 20, qstart, qstop);
     uint32_t nstart = read.find_first_not_of("N");
     uint32_t nstop = read.find_last_not_of("N") + 1;
-    uint32_t stop = nstop; // std::min(qstop, nstop);
+    uint32_t stop = nstop;  // std::min(qstop, nstop);
     uint32_t adaptor_start = naive_matching(read.substr(0, stop));
     stop = std::min(stop, adaptor_start);
     nstop = read.substr(0, stop).find_last_not_of("N") + 1;
     stop = std::min(stop, nstop);
     read.resize(nstop);
-    uint32_t start = std::min(nstart, stop); // std::max(qstart, nstart), stop);
+    uint32_t start =
+      std::min(nstart, stop);  // std::max(qstart, nstart), stop);
     read = read.substr(start, stop - start);
 
     // read.resize(read.find_last_not_of("N") + 1);  // remove trailing N
@@ -344,30 +344,26 @@ struct adaptor_trimmer {
     // read.resize(read.find_last_not_of("N") + 1);  // remove trailing N
     // read = read.substr(read.find_first_not_of("N"));  // remove leading N
   }
-  operator bool() const {
-    return n > 0;
-  }
+  operator bool() const { return n > 0; }
 };
 
-template<typename T>
-struct ReadLoaderBase {
-  ReadLoaderBase(const string &fn, const string &adaptor):
-    cur_line{0}, filename{fn}, in{fn, "r"},
-    trimmer(adaptor) {}
-  ReadLoaderBase(const string &fn): cur_line{0}, filename{fn}, in{fn, "r"} {}
+template <typename T> struct ReadLoaderBase {
+  ReadLoaderBase(const string &fn, const string &adaptor) :
+    cur_line{0}, filename{fn}, in{fn, "r"}, trimmer(adaptor) {}
+  ReadLoaderBase(const string &fn) : cur_line{0}, filename{fn}, in{fn, "r"} {}
 
   bool good() const { return in; }
 
   operator bool() const { return in; }
 
   size_t get_current_read() const {
-    return static_cast<const T*>(this)->get_current_read_impl();
+    return static_cast<const T *>(this)->get_current_read_impl();
   }
 
   size_t get_current_byte() const { return in.tellg(); }
 
   void load_reads(vector<string> &names, vector<string> &reads) {
-    static_cast<T*>(this)->load_reads_impl(names, reads);
+    static_cast<T *>(this)->load_reads_impl(names, reads);
   }
 
   uint32_t cur_line;
@@ -376,7 +372,8 @@ struct ReadLoaderBase {
   adaptor_trimmer trimmer;
 
   static const size_t batch_size = 1000;
-  static const uint32_t min_read_length = seed::key_weight + seed::window_size - 1;
+  static const uint32_t min_read_length =
+    seed::key_weight + seed::window_size - 1;
 };
 
 // const size_t ReadLoaderBase::batch_size = 1000;
@@ -466,7 +463,7 @@ struct ReadLoaderFasta : ReadLoaderBase<ReadLoaderFasta> {
           read.clear();
         reads.emplace_back(read);
       }
-      else { // if (line_count % 2 == 0) {
+      else {  // if (line_count % 2 == 0) {
         if (line.empty())
           throw runtime_error("file " + filename + " contains an empty " +
                               "read name at line " + to_string(cur_line));
@@ -478,12 +475,12 @@ struct ReadLoaderFasta : ReadLoaderBase<ReadLoaderFasta> {
   }
 };
 
-
 // GS: used to allocate the appropriate dimensions of the banded
 // alignment matrix for a batch of reads
 static inline void
 update_max_read_length(size_t &max_length, const vector<string> &reads) {
-  for (auto &i : reads) max_length = max(max_length, i.size());
+  for (auto &i : reads)
+    max_length = max(max_length, i.size());
 }
 
 struct se_element {  // size = 8
@@ -491,10 +488,10 @@ struct se_element {  // size = 8
   flags_t flags;     // 2 bytes
   uint32_t pos;      // 4 bytes
 
-  se_element(): diffs(MAX_DIFFS), flags(0), pos(0) {}
+  se_element() : diffs(MAX_DIFFS), flags(0), pos(0) {}
 
-  se_element(const score_t d, const flags_t f, const uint32_t p)
-      : diffs(d), flags(f), pos(p) {}
+  se_element(const score_t d, const flags_t f, const uint32_t p) :
+    diffs(d), flags(f), pos(p) {}
 
   bool operator==(const se_element &rhs) const {
     return pos == rhs.pos && flags == rhs.flags;
@@ -570,13 +567,15 @@ valid_hit(const se_element s, const uint32_t readlen) {
   return s.diffs < static_cast<score_t>(se_element::invalid_hit_frac * readlen);
 }
 
-template<class T> static inline T
+template <class T>
+static inline T
 max16(const T x, const T y) {
   return (x > y) ? x : y;
 }
 
 struct se_candidates {
-  se_candidates(): sz(1), best(se_element()), v(vector<se_element>(max_size)) {}
+  se_candidates() :
+    sz(1), best(se_element()), v(vector<se_element>(max_size)) {}
 
   inline bool full() const { return sz == max_size; };
 
@@ -606,7 +605,9 @@ struct se_candidates {
       pop_heap(begin(v), begin(v) + sz);
       v[sz - 1] = se_element(d, s, p);
     }
-    else { v[sz++] = se_element(d, s, p); }
+    else {
+      v[sz++] = se_element(d, s, p);
+    }
     push_heap(begin(v), begin(v) + sz);
   }
 
@@ -674,7 +675,8 @@ static inline bool
 chrom_and_posn(const ChromLookup &cl, const bam_cigar_t &cig, const uint32_t p,
                uint32_t &r_p, uint32_t &r_e, uint32_t &r_chr) {
   const uint32_t ref_ops = cigar_rseq_ops(cig);
-  if (!cl.get_chrom_idx_and_offset(p, ref_ops, r_chr, r_p)) return false;
+  if (!cl.get_chrom_idx_and_offset(p, ref_ops, r_chr, r_p))
+    return false;
   r_e = r_p + ref_ops;
   return true;
 }
@@ -687,7 +689,8 @@ format_se(const bool allow_ambig, const se_element &res, const ChromLookup &cl,
           bam_rec &sr) {
   const bool ambig = res.ambig();
   const bool valid = !res.empty();
-  if (!allow_ambig && ambig) return map_ambig;
+  if (!allow_ambig && ambig)
+    return map_ambig;
 
   uint32_t ref_s = 0, ref_e = 0, chrom_idx = 0;
   if (!valid || !chrom_and_posn(cl, cigar, res.pos, ref_s, ref_e, chrom_idx))
@@ -695,9 +698,11 @@ format_se(const bool allow_ambig, const se_element &res, const ChromLookup &cl,
 
   // ADS: we might be doing format_se for a mate in paried reads
   uint16_t flag = 0;
-  if (res.rc()) flag |= BAM_FREVERSE;
+  if (res.rc())
+    flag |= BAM_FREVERSE;
 
-  if (allow_ambig && ambig) flag |= BAM_FSECONDARY;
+  if (allow_ambig && ambig)
+    flag |= BAM_FSECONDARY;
 
   // flag |= BAM_FREAD1;  // ADS: this might be wrong...
 
@@ -718,20 +723,23 @@ format_se(const bool allow_ambig, const se_element &res, const ChromLookup &cl,
                      read.data(),       // const char *seq,
                      nullptr,           // const char *qual,
                      16);               // size_t l_aux);
-  if (ret < 0) throw runtime_error("failed to format bam");
+  if (ret < 0)
+    throw runtime_error("failed to format bam");
 
   ret = bam_aux_update_int(sr.b, "NM", res.diffs);
-  if (ret < 0) throw runtime_error("bam_aux_update_int");
+  if (ret < 0)
+    throw runtime_error("bam_aux_update_int");
 
   ret = bam_aux_append(sr.b, "CV", 'A', 1,
                        (uint8_t *)(res.elem_is_a_rich() ? "A" : "T"));
-  if (ret < 0) throw runtime_error("bam_aux_append");
+  if (ret < 0)
+    throw runtime_error("bam_aux_append");
 
   return ambig ? map_ambig : map_unique;
 }
 
 struct pe_element {
-  pe_element(): aln_score(0), r1(se_element()), r2(se_element()) {}
+  pe_element() : aln_score(0), r1(se_element()), r2(se_element()) {}
 
   score_t diffs() const { return r1.diffs + r2.diffs; }
 
@@ -749,13 +757,15 @@ struct pe_element {
   }
 
   bool update(const score_t scr, const se_element &s1, const se_element &s2) {
-    if (scr > aln_score) {
+    const auto rd = r1.diffs + r2.diffs;
+    const auto sd = s1.diffs + s2.diffs;
+    if (scr > aln_score || (scr == aln_score && sd < rd)) {
       r1 = s1;
       r2 = s2;
       aln_score = scr;
       return true;
     }
-    else if (scr == aln_score) {
+    else if (scr == aln_score && sd == rd) {
       r1.set_ambig();
       return false;
     }
@@ -820,10 +830,12 @@ format_pe(const bool allow_ambig, const pe_element &p, const ChromLookup &cl,
           bam_rec &sr1, bam_rec &sr2) {
   static const uint8_t cv[2] = {'T', 'A'};
 
-  if (p.empty()) return map_unmapped;
+  if (p.empty())
+    return map_unmapped;
 
   const bool ambig = p.ambig();
-  if (!allow_ambig && ambig) return map_ambig;
+  if (!allow_ambig && ambig)
+    return map_ambig;
 
   uint32_t r_s1 = 0, r_e1 = 0, chr1 = 0;  // positions in chroms (0-based)
   uint32_t r_s2 = 0, r_e2 = 0, chr2 = 0;
@@ -876,13 +888,16 @@ format_pe(const bool allow_ambig, const pe_element &p, const ChromLookup &cl,
                      read1.data(),  // const char *seq,
                      nullptr,       // const char *qual,
                      16);           // size_t l_aux);
-  if (ret < 0) throw runtime_error("error formatting bam");
+  if (ret < 0)
+    throw runtime_error("error formatting bam");
 
   ret = bam_aux_update_int(sr1.b, "NM", p.r1.diffs);
-  if (ret < 0) throw runtime_error("error adding aux field");
+  if (ret < 0)
+    throw runtime_error("error adding aux field");
 
   ret = bam_aux_append(sr1.b, "CV", 'A', 1, cv + p.r1.elem_is_a_rich());
-  if (ret < 0) throw runtime_error("error adding aux field");
+  if (ret < 0)
+    throw runtime_error("error adding aux field");
 
   sr2.b = bam_init1();
   ret = bam_set1(sr2.b,
@@ -901,19 +916,22 @@ format_pe(const bool allow_ambig, const pe_element &p, const ChromLookup &cl,
                  read2.data(),  // const char *seq,
                  nullptr,       // const char *qual,
                  16);           // size_t l_aux);
-  if (ret < 0) throw runtime_error("failed to format bam");
+  if (ret < 0)
+    throw runtime_error("failed to format bam");
 
   ret = bam_aux_update_int(sr2.b, "NM", p.r2.diffs);
-  if (ret < 0) throw runtime_error("error adding aux field");
+  if (ret < 0)
+    throw runtime_error("error adding aux field");
 
   ret = bam_aux_append(sr2.b, "CV", 'A', 1, cv + p.r2.elem_is_a_rich());
-  if (ret < 0) throw runtime_error("error adding aux field");
+  if (ret < 0)
+    throw runtime_error("error adding aux field");
 
   return ambig ? map_ambig : map_unique;
 }
 
 struct pe_candidates {
-  pe_candidates(): v(vector<se_element>(max_size_large)) {}
+  pe_candidates() : v(vector<se_element>(max_size_large)) {}
 
   inline void reset(const uint32_t readlen) {
     v.front().reset(readlen);
@@ -1052,7 +1070,8 @@ struct se_map_stats {
     reads_unmapped += !valid;
     skipped_reads += read.empty();
 
-    if (valid && (allow_ambig || !ambig)) update_error_rate(s.diffs, cigar);
+    if (valid && (allow_ambig || !ambig))
+      update_error_rate(s.diffs, cigar);
   }
 
   void update_error_rate(const score_t diffs, const bam_cigar_t &cigar) {
@@ -1082,7 +1101,8 @@ struct se_map_stats {
     assign_values();
 
     string t;
-    for (size_t i = 0; i < n_tabs; ++i) t += tab;
+    for (size_t i = 0; i < n_tabs; ++i)
+      t += tab;
     ostringstream oss;
     if (!protocol.empty())
       oss << t << "protocol: " << protocol << endl;
@@ -1273,7 +1293,8 @@ select_output(const bool allow_ambig, const ChromLookup &cl,
                                          name1, name2, cig1, cig2, sr1, sr2);
 
   if (!best.should_report(allow_ambig) || pe_map_type == map_unmapped) {
-    if (pe_map_type == map_unmapped) best.reset();
+    if (pe_map_type == map_unmapped)
+      best.reset();
     if (format_se(allow_ambig, se1, cl, read1, name1, cig1, sr1) ==
         map_unmapped)
       se1.reset();
@@ -1315,7 +1336,7 @@ full_compare(const score_t cutoff, const PackedRead::const_iterator read_end,
   return d;
 }
 
-template<const uint16_t strand_code, const bool specific, class result_type>
+template <const uint16_t strand_code, const bool specific, class result_type>
 static inline void
 check_hits(const uint32_t offset, const PackedRead::const_iterator read_st,
            const PackedRead::const_iterator read_end,
@@ -1338,12 +1359,13 @@ check_hits(const uint32_t offset, const PackedRead::const_iterator read_st,
       full_compare(res.cutoff, read_end, ((the_pos & 15u) << 2), read_st,
                    genome_st + (the_pos >> 4));
 
-    if (diffs <= res.cutoff) res.update(specific, diffs, strand_code, the_pos);
+    if (diffs <= res.cutoff)
+      res.update(specific, diffs, strand_code, the_pos);
   }
 }
 
 struct compare_bases {
-  compare_bases(const genome_iterator g_): g(g_) {}
+  compare_bases(const genome_iterator g_) : g(g_) {}
 
   bool operator()(const uint32_t mid, const two_letter_t chr) const {
     return get_bit(*(g + mid)) < chr;
@@ -1352,7 +1374,8 @@ struct compare_bases {
   const genome_iterator g;
 };
 
-template<const uint32_t start_length> static uint32_t
+template <const uint32_t start_length>
+static uint32_t
 find_candidates(const uint32_t max_candidates,
                 const Read::const_iterator read_start, const genome_iterator gi,
                 const uint32_t read_lim, vector<uint32_t>::const_iterator &low,
@@ -1384,14 +1407,15 @@ find_candidates(const uint32_t max_candidates,
   return p;
 }
 
-template<const three_conv_type the_conv> static inline three_letter_t
+template <const three_conv_type the_conv>
+static inline three_letter_t
 get_three_letter_num_fast(const uint8_t nt) {
   return (the_conv == c_to_t) ? nt & 5 :  // C=T=0, A=1, G=4
            nt & 10;                       // A=G=0, C=2, T=8
 }
 
-template<const three_conv_type the_conv> struct compare_bases_three {
-  compare_bases_three(const genome_iterator g_): g(g_) {}
+template <const three_conv_type the_conv> struct compare_bases_three {
+  compare_bases_three(const genome_iterator g_) : g(g_) {}
 
   bool operator()(const uint32_t mid, const three_letter_t chr) const {
     return get_three_letter_num_fast<the_conv>(*(g + mid)) < chr;
@@ -1400,7 +1424,7 @@ template<const three_conv_type the_conv> struct compare_bases_three {
   const genome_iterator g;
 };
 
-template<const uint32_t start_length, const three_conv_type the_conv>
+template <const uint32_t start_length, const three_conv_type the_conv>
 static uint32_t
 find_candidates_three(const uint32_t max_candidates,
                       const Read::const_iterator read_start,
@@ -1453,7 +1477,8 @@ get_conv_type(const uint16_t strand_code) {
             : (c_to_t));
 }
 
-template<const uint16_t strand_code, class result_type> static void
+template <const uint16_t strand_code, class result_type>
+static void
 process_seeds(const uint32_t max_candidates,
               const vector<uint32_t>::const_iterator counter_st,
               const vector<uint32_t>::const_iterator counter_three_st,
@@ -1520,7 +1545,8 @@ process_seeds(const uint32_t max_candidates,
     shift_three_key<the_conv>(*(read_idx + seed::key_weight_three), k_three);
   }
 
-  if (!res.should_do_sensitive()) return;
+  if (!res.should_do_sensitive())
+    return;
 
   read_idx = begin(read_seed);
   get_1bit_hash(read_idx, k);
@@ -1559,7 +1585,8 @@ process_seeds(const uint32_t max_candidates,
   }
 }
 
-template<const bool convert_a_to_g> static void
+template <const bool convert_a_to_g>
+static void
 prep_read(const string &r, Read &pread) {
   pread.resize(r.size());
   for (size_t i = 0; i != r.size(); ++i)
@@ -1595,7 +1622,8 @@ pack_read(const Read &pread, PackedRead &packed_pread) {
   }
 
   // do not fill the flanking position
-  if (pread_ind == sz) return;
+  if (pread_ind == sz)
+    return;
 
   // now put only the remaining bases in the last pos. The rest
   // should match any base in the reference
@@ -1604,7 +1632,8 @@ pack_read(const Read &pread, PackedRead &packed_pread) {
   while (pread_ind < sz)
     *it |= (static_cast<element_t>(pread[pread_ind++]) << ((j++) << 2));
 
-  while (j < NUM_BASES_PER_ELEMENT) *it |= base_match_any << ((j++) << 2);
+  while (j < NUM_BASES_PER_ELEMENT)
+    *it |= base_match_any << ((j++) << 2);
 }
 
 static inline bool
@@ -1672,7 +1701,8 @@ align_se_candidates(const Read &pread_t, const Read &pread_t_rc,
     best.diffs = simple_aln::edit_distance(best_scr, len, cigar);
 
     // do not report and count it as unmapped if not valid
-    if (!valid(best, len, readlen, cutoff)) best.reset();
+    if (!valid(best, len, readlen, cutoff))
+      best.reset();
   }
   else
     best.reset();
@@ -1685,11 +1715,12 @@ valid_bam_rec(const bam_rec &b) {
 
 static inline void
 reset_bam_rec(bam_rec &b) {
-  if (b.b) bam_destroy1(b.b);
+  if (b.b)
+    bam_destroy1(b.b);
   b.b = nullptr;
 }
 
-template<const conversion_type conv, typename ReadLoader = ReadLoaderFastq>
+template <const conversion_type conv, typename ReadLoader = ReadLoaderFastq>
 static void
 map_single_ended(const bool show_progress, const bool allow_ambig,
                  const AbismalIndex &abismal_index, ReadLoader &rl,
@@ -1777,26 +1808,29 @@ map_single_ended(const bool show_progress, const bool allow_ambig,
     {
       for (size_t i = 0; i < n_reads; ++i) {
         if (valid_bam_rec(mr[i])) {
-          if (is_a_rich(mr[i])) flip_conversion(mr[i]);
+          if (is_a_rich(mr[i]))
+            flip_conversion(mr[i]);
           if (!out.write(hdr, mr[i]))
             throw runtime_error("failed to write bam");
         }
       }
     }
     for (size_t i = 0; i < n_reads; ++i) {
-      if (valid_bam_rec(mr[i])) reset_bam_rec(mr[i]);
+      if (valid_bam_rec(mr[i]))
+        reset_bam_rec(mr[i]);
       se_stats.update(allow_ambig, reads[i], cigar[i], bests[i]);
       cigar[i].clear();
     }
     if (show_progress)
 #pragma omp critical
     {
-      if (progress.time_to_report(the_byte)) progress.report(cerr, the_byte);
+      if (progress.time_to_report(the_byte))
+        progress.report(cerr, the_byte);
     }
   }
 }
 
-template<typename ReadLoader = ReadLoaderFastq>
+template <typename ReadLoader = ReadLoaderFastq>
 static void
 map_single_ended_rand(const bool show_progress, const bool allow_ambig,
                       const AbismalIndex &abismal_index, ReadLoader &rl,
@@ -1893,20 +1927,23 @@ map_single_ended_rand(const bool show_progress, const bool allow_ambig,
     {
       for (size_t i = 0; i < n_reads; ++i)
         if (valid_bam_rec(mr[i])) {
-          if (is_a_rich(mr[i])) flip_conversion(mr[i]);
+          if (is_a_rich(mr[i]))
+            flip_conversion(mr[i]);
           if (!out.write(hdr, mr[i]))
             throw runtime_error("failed to write bam");
         }
     }
     for (size_t i = 0; i < n_reads; ++i) {
-      if (valid_bam_rec(mr[i])) reset_bam_rec(mr[i]);
+      if (valid_bam_rec(mr[i]))
+        reset_bam_rec(mr[i]);
       se_stats.update(allow_ambig, reads[i], cigar[i], bests[i]);
       cigar[i].clear();
     }
     if (show_progress)
 #pragma omp critical
     {
-      if (progress.time_to_report(the_byte)) progress.report(cerr, the_byte);
+      if (progress.time_to_report(the_byte))
+        progress.report(cerr, the_byte);
     }
   }
 }
@@ -1919,13 +1956,13 @@ format_time_in_sec(const double t) {
   return oss.str();
 }
 
-template<const conversion_type conv, const bool rpbat_mode,
-         typename ReadLoader = ReadLoaderFastq> static void
-run_single_ended(const string &adaptor_sequence,
-                 const bool show_progress, const bool allow_ambig,
-                 const string &reads_file, const AbismalIndex &abismal_index,
-                 se_map_stats &se_stats, bamxx::bam_header &hdr,
-                 bamxx::bam_out &out) {
+template <const conversion_type conv, const bool rpbat_mode,
+          typename ReadLoader = ReadLoaderFastq>
+static void
+run_single_ended(const string &adaptor_sequence, const bool show_progress,
+                 const bool allow_ambig, const string &reads_file,
+                 const AbismalIndex &abismal_index, se_map_stats &se_stats,
+                 bamxx::bam_header &hdr, bamxx::bam_out &out) {
   ReadLoader rl(reads_file, adaptor_sequence);
   ProgressBar progress(get_filesize(reads_file), "mapping reads");
 
@@ -1954,7 +1991,8 @@ best_single(const pe_candidates &pres, se_candidates &res) {
     res.update(false, i->diffs, i->flags, i->pos);
 }
 
-template<const bool swap_ends> static void
+template <const bool swap_ends>
+static void
 best_pair(const pe_candidates &res1, const pe_candidates &res2,
           const Read &pread1, const Read &pread2, bam_cigar_t &cigar1,
           bam_cigar_t &cigar2, vector<score_t> &mem_scr1,
@@ -2068,7 +2106,8 @@ best_pair(const pe_candidates &res1, const pe_candidates &res2,
   }
 }
 
-template<const bool swap_ends> static bool
+template <const bool swap_ends>
+static bool
 select_maps(const Read &pread1, const Read &pread2, bam_cigar_t &cig1,
             bam_cigar_t &cig2, pe_candidates &res1, pe_candidates &res2,
             vector<score_t> &mem_scr1, se_candidates &res_se1,
@@ -2084,8 +2123,8 @@ select_maps(const Read &pread1, const Read &pread2, bam_cigar_t &cig1,
   return true;
 }
 
-template<const bool cmp, const bool swap_ends, const uint16_t strand_code1,
-         const uint16_t strand_code2>
+template <const bool cmp, const bool swap_ends, const uint16_t strand_code1,
+          const uint16_t strand_code2>
 static inline bool
 map_fragments(const uint32_t max_candidates, const string &read1,
               const string &read2,
@@ -2102,7 +2141,8 @@ map_fragments(const uint32_t max_candidates, const string &read1,
   res1.reset(read1.size());
   res2.reset(read2.size());
 
-  if (read1.empty() && read2.empty()) return false;
+  if (read1.empty() && read2.empty())
+    return false;
 
   if (!read1.empty()) {
     prep_read<cmp>(read1, pread1);
@@ -2125,7 +2165,8 @@ map_fragments(const uint32_t max_candidates, const string &read1,
                                 mem_scr1, res_se1, res_se2, aln, best);
 }
 
-template<const conversion_type conv, typename ReadLoader = ReadLoaderFastq> static void
+template <const conversion_type conv, typename ReadLoader = ReadLoaderFastq>
+static void
 map_paired_ended(const bool show_progress, const bool allow_ambig,
                  const AbismalIndex &abismal_index, ReadLoader &rl1,
                  ReadLoader &rl2, pe_map_stats &pe_stats,
@@ -2271,35 +2312,48 @@ map_paired_ended(const bool show_progress, const bool allow_ambig,
       for (size_t i = 0; i < n_reads; ++i) {
         if (valid_bam_rec(mr1[i]) && valid_bam_rec(mr2[i])) {
           // below: essentially check for dovetail
-          if (!bam_is_rev(mr2[i])) swap(mr1[i], mr2[i]);
+          if (!bam_is_rev(mr2[i]))
+            swap(mr1[i], mr2[i]);
           bam_rec merged;
           const int32_t frag_len = merge_mates(mr1[i], mr2[i], merged);
           if (frag_len > 0 && frag_len < max_frag_len) {
-            if (is_a_rich(merged)) flip_conversion(merged);
-            if (!out.write(hdr, merged)) throw bam_write_err;
+            if (is_a_rich(merged))
+              flip_conversion(merged);
+            if (!out.write(hdr, merged))
+              throw bam_write_err;
           }
           else {
-            if (is_a_rich(mr1[i])) flip_conversion(mr1[i]);
-            if (!out.write(hdr, mr1[i])) throw bam_write_err;
-            if (is_a_rich(mr2[i])) flip_conversion(mr2[i]);
-            if (!out.write(hdr, mr2[i])) throw bam_write_err;
+            if (is_a_rich(mr1[i]))
+              flip_conversion(mr1[i]);
+            if (!out.write(hdr, mr1[i]))
+              throw bam_write_err;
+            if (is_a_rich(mr2[i]))
+              flip_conversion(mr2[i]);
+            if (!out.write(hdr, mr2[i]))
+              throw bam_write_err;
           }
         }
         else {
           if (valid_bam_rec(mr1[i])) {
-            if (is_a_rich(mr1[i])) flip_conversion(mr1[i]);
-            if (!out.write(hdr, mr1[i])) throw bam_write_err;
+            if (is_a_rich(mr1[i]))
+              flip_conversion(mr1[i]);
+            if (!out.write(hdr, mr1[i]))
+              throw bam_write_err;
           }
           if (valid_bam_rec(mr2[i])) {
-            if (is_a_rich(mr2[i])) flip_conversion(mr2[i]);
-            if (!out.write(hdr, mr2[i])) throw bam_write_err;
+            if (is_a_rich(mr2[i]))
+              flip_conversion(mr2[i]);
+            if (!out.write(hdr, mr2[i]))
+              throw bam_write_err;
           }
         }
       }
     }
     for (size_t i = 0; i < n_reads; ++i) {
-      if (valid_bam_rec(mr1[i])) reset_bam_rec(mr1[i]);
-      if (valid_bam_rec(mr2[i])) reset_bam_rec(mr2[i]);
+      if (valid_bam_rec(mr1[i]))
+        reset_bam_rec(mr1[i]);
+      if (valid_bam_rec(mr2[i]))
+        reset_bam_rec(mr2[i]);
       pe_stats.update(allow_ambig, reads1[i], reads2[i], cigar1[i], cigar2[i],
                       bests[i], bests_se1[i], bests_se2[i]);
       cigar1[i].clear();
@@ -2308,12 +2362,13 @@ map_paired_ended(const bool show_progress, const bool allow_ambig,
     if (show_progress)
 #pragma omp critical
     {
-      if (progress.time_to_report(the_byte)) progress.report(cerr, the_byte);
+      if (progress.time_to_report(the_byte))
+        progress.report(cerr, the_byte);
     }
   }
 }
 
-template<typename ReadLoader = ReadLoaderFastq>
+template <typename ReadLoader = ReadLoaderFastq>
 static void
 map_paired_ended_rand(const bool show_progress, const bool allow_ambig,
                       const AbismalIndex &abismal_index, ReadLoader &rl1,
@@ -2469,35 +2524,48 @@ map_paired_ended_rand(const bool show_progress, const bool allow_ambig,
       for (size_t i = 0; i < n_reads; ++i) {
         if (valid_bam_rec(mr1[i]) && valid_bam_rec(mr2[i])) {
           // below: essentially check for dovetail
-          if (!bam_is_rev(mr2[i])) swap(mr1[i], mr2[i]);
+          if (!bam_is_rev(mr2[i]))
+            swap(mr1[i], mr2[i]);
           bam_rec merged;
           const auto frag_len = merge_mates(mr1[i], mr2[i], merged);
           if (frag_len > 0 && frag_len < max_frag_len) {
-            if (is_a_rich(merged)) flip_conversion(merged);
-            if (!out.write(hdr, merged)) throw bam_write_err;
+            if (is_a_rich(merged))
+              flip_conversion(merged);
+            if (!out.write(hdr, merged))
+              throw bam_write_err;
           }
           else {
-            if (is_a_rich(mr1[i])) flip_conversion(mr1[i]);
-            if (!out.write(hdr, mr1[i])) throw bam_write_err;
-            if (is_a_rich(mr2[i])) flip_conversion(mr2[i]);
-            if (!out.write(hdr, mr2[i])) throw bam_write_err;
+            if (is_a_rich(mr1[i]))
+              flip_conversion(mr1[i]);
+            if (!out.write(hdr, mr1[i]))
+              throw bam_write_err;
+            if (is_a_rich(mr2[i]))
+              flip_conversion(mr2[i]);
+            if (!out.write(hdr, mr2[i]))
+              throw bam_write_err;
           }
         }
         else {
           if (valid_bam_rec(mr1[i])) {
-            if (is_a_rich(mr1[i])) flip_conversion(mr1[i]);
-            if (!out.write(hdr, mr1[i])) throw bam_write_err;
+            if (is_a_rich(mr1[i]))
+              flip_conversion(mr1[i]);
+            if (!out.write(hdr, mr1[i]))
+              throw bam_write_err;
           }
           if (valid_bam_rec(mr2[i])) {
-            if (is_a_rich(mr2[i])) flip_conversion(mr2[i]);
-            if (!out.write(hdr, mr2[i])) throw bam_write_err;
+            if (is_a_rich(mr2[i]))
+              flip_conversion(mr2[i]);
+            if (!out.write(hdr, mr2[i]))
+              throw bam_write_err;
           }
         }
       }
     }
     for (size_t i = 0; i < n_reads; ++i) {
-      if (valid_bam_rec(mr1[i])) reset_bam_rec(mr1[i]);
-      if (valid_bam_rec(mr2[i])) reset_bam_rec(mr2[i]);
+      if (valid_bam_rec(mr1[i]))
+        reset_bam_rec(mr1[i]);
+      if (valid_bam_rec(mr2[i]))
+        reset_bam_rec(mr2[i]);
       pe_stats.update(allow_ambig, reads1[i], reads2[i], cigar1[i], cigar2[i],
                       bests[i], bests_se1[i], bests_se2[i]);
       cigar1[i].clear();
@@ -2506,18 +2574,20 @@ map_paired_ended_rand(const bool show_progress, const bool allow_ambig,
     if (show_progress)
 #pragma omp critical
     {
-      if (progress.time_to_report(the_byte)) progress.report(cerr, the_byte);
+      if (progress.time_to_report(the_byte))
+        progress.report(cerr, the_byte);
     }
   }
 }
 
-template<const conversion_type conv, const bool rpbat_mode, typename ReadLoader = ReadLoaderFastq>
+template <const conversion_type conv, const bool rpbat_mode,
+          typename ReadLoader = ReadLoaderFastq>
 static void
-run_paired_ended(const string &adaptor_sequence,
-                 const bool show_progress, const bool allow_ambig,
-                 const string &reads_file1, const string &reads_file2,
-                 const AbismalIndex &abismal_index, pe_map_stats &pe_stats,
-                 bamxx::bam_header &hdr, bamxx::bam_out &out) {
+run_paired_ended(const string &adaptor_sequence, const bool show_progress,
+                 const bool allow_ambig, const string &reads_file1,
+                 const string &reads_file2, const AbismalIndex &abismal_index,
+                 pe_map_stats &pe_stats, bamxx::bam_header &hdr,
+                 bamxx::bam_out &out) {
   ReadLoader rl1(reads_file1, adaptor_sequence);
   ReadLoader rl2(reads_file2, adaptor_sequence);
   ProgressBar progress(get_filesize(reads_file1), "mapping reads");
@@ -2588,7 +2658,8 @@ abismal_make_sam_header(const ChromLookup &cl, const int argc,
 static bool
 is_fasta_file(const string &filename) {
   bamxx::bgzf_file in{filename, "r"};
-  if (!in) throw runtime_error("failed to open file: " + filename);
+  if (!in)
+    throw runtime_error("failed to open file: " + filename);
   string line;
   if (!getline(in, line))
     throw runtime_error("failed to read from file: " + filename);
@@ -2596,7 +2667,8 @@ is_fasta_file(const string &filename) {
 }
 
 static auto
-get_reads_files(const string &dirname, const string &accession) -> vector<string> {
+get_reads_files(const string &dirname,
+                const string &accession) -> vector<string> {
   // static constexpr auto end_pt = "(_1|_2|_1_val_1|_2_val_2|_trimmed)?";
   // static constexpr auto suff_pt = "(fa|fq|fasta|fastq)";
   // static constexpr auto gz_pt = "(.gz)?";
@@ -2629,7 +2701,8 @@ get_reads_files(const string &dirname, const string &accession) -> vector<string
     filenames.erase(std::remove_if(begin(filenames), end(filenames),
                                    [](const string &s) {
                                      return s.find('_') == string::npos;
-                                   }), end(filenames));
+                                   }),
+                    end(filenames));
   }
 
   if (size(filenames) != 2 || size(filenames.front()) != size(filenames.back()))
@@ -2694,10 +2767,10 @@ abismal(int argc, const char **argv) {
                       false, se_element::valid_frac);
     opt_parse.add_opt("ambig", 'a', "report a posn for ambiguous mappers",
                       false, allow_ambig);
-    opt_parse.add_opt("trim", '\0', "trim adaptors from reads",
-                      false, trim_adaptors);
-    opt_parse.add_opt("adap", '\0', "use this as adaptor",
-                      false, adaptor_sequence);
+    opt_parse.add_opt("trim", '\0', "trim adaptors from reads", false,
+                      trim_adaptors);
+    opt_parse.add_opt("adap", '\0', "use this as adaptor", false,
+                      adaptor_sequence);
     opt_parse.add_opt("wgbs", 'W', "input follows the WGBS protocol", false,
                       wgbs_mode);
     opt_parse.add_opt("pbat", 'P', "input follows the PBAT protocol", false,
@@ -2770,10 +2843,10 @@ abismal(int argc, const char **argv) {
       const auto accession = fs::path{reads_file}.filename();
       const auto reads_files = get_reads_files(reads_dir, accession);
       if (size(reads_files) == 1)
-        reads_file = reads_dir/fs::path{reads_files[0]};
+        reads_file = reads_dir / fs::path{reads_files[0]};
       else if (size(reads_files) == 2) {
-        reads_file = reads_dir/fs::path{reads_files[0]};
-        reads_file2 = reads_dir/fs::path{reads_files[1]};
+        reads_file = reads_dir / fs::path{reads_files[0]};
+        reads_file2 = reads_dir / fs::path{reads_files[1]};
         paired_end = true;
       }
       else {
@@ -2787,15 +2860,16 @@ abismal(int argc, const char **argv) {
     const int n_procs = omp_get_num_procs();
     int num_threads_fulfilled = 1;
 #pragma omp parallel
-    { num_threads_fulfilled = omp_get_num_threads(); }
+    {
+      num_threads_fulfilled = omp_get_num_threads();
+    }
 
     if (VERBOSE && n_threads > n_procs)
-      print_with_time(
-        "[WARNING] requesting more threads than the "
-        "maximum of " +
-        to_string(n_procs) +
-        " processors available in "
-        "this device");
+      print_with_time("[WARNING] requesting more threads than the "
+                      "maximum of " +
+                      to_string(n_procs) +
+                      " processors available in "
+                      "this device");
 
     if (VERBOSE)
       print_with_time("using " + to_string(num_threads_fulfilled) +
@@ -2829,7 +2903,8 @@ abismal(int argc, const char **argv) {
 
     const double start_time = omp_get_wtime();
     if (!index_file.empty()) {
-      if (VERBOSE) print_with_time("loading index " + index_file);
+      if (VERBOSE)
+        print_with_time("loading index " + index_file);
       abismal_index.read(index_file);
 
       if (VERBOSE)
@@ -2837,7 +2912,8 @@ abismal(int argc, const char **argv) {
                         format_time_in_sec(omp_get_wtime() - start_time));
     }
     else {
-      if (VERBOSE) print_with_time("indexing genome " + genome_file);
+      if (VERBOSE)
+        print_with_time("indexing genome " + genome_file);
       abismal_index.create_index(genome_file);
       if (VERBOSE)
         print_with_time("indexing time: " +
@@ -2854,15 +2930,17 @@ abismal(int argc, const char **argv) {
     if (!wgbs_mode && !pbat_mode && !rpbat_mode) {
       print_with_time("guessing protocol");
       const auto protocol =
-        guessprotocol(fasta, 10000, 0.1, 0.8, abismal_index,
-                      adaptor_sequence, reads_file, reads_file2, string());
+        guessprotocol(fasta, 10000, 0.1, 0.8, abismal_index, adaptor_sequence,
+                      reads_file, reads_file2, string());
       if (protocol == 0)
         wgbs_mode = true;
       else if (protocol == 1)
         pbat_mode = true;
       else  // default is rpbat
         rpbat_mode = true;
-      guessed_protocol = protocol == 0 ? "wgbs" : protocol == 1 ? "pbat" : "rpbat";
+      guessed_protocol = protocol == 0   ? "wgbs"
+                         : protocol == 1 ? "pbat"
+                                         : "rpbat";
       if (VERBOSE)
         print_with_time("guessed protocol: " + guessed_protocol);
     }
@@ -2872,14 +2950,17 @@ abismal(int argc, const char **argv) {
     pe_map_stats pe_stats;
 
     bamxx::bam_out out(outfile, write_bam_fmt);
-    if (!out) throw runtime_error("failed to open output file: " + outfile);
+    if (!out)
+      throw runtime_error("failed to open output file: " + outfile);
 
     bamxx::bam_header hdr;
     int ret = abismal_make_sam_header(abismal_index.cl, argc, argv, hdr);
 
-    if (ret < 0) throw runtime_error("error formatting header");
+    if (ret < 0)
+      throw runtime_error("error formatting header");
 
-    if (!out.write(hdr)) throw runtime_error("error writing header");
+    if (!out.write(hdr))
+      throw runtime_error("error writing header");
 
     if (fasta) {
       using TT = ReadLoaderFasta;
@@ -2947,10 +3028,12 @@ abismal(int argc, const char **argv) {
     if (!stats_outfile.empty()) {
       std::ofstream stats_of(stats_outfile);
       if (stats_of)
-        stats_of << (reads_file2.empty() ? se_stats.tostring(guessed_protocol)
-                     : pe_stats.tostring(guessed_protocol, allow_ambig));
+        stats_of << (reads_file2.empty()
+                       ? se_stats.tostring(guessed_protocol)
+                       : pe_stats.tostring(guessed_protocol, allow_ambig));
       else
-        throw runtime_error("failed to open stats output file: " + stats_outfile);
+        throw runtime_error("failed to open stats output file: " +
+                            stats_outfile);
       if (remove_input_files) {
         fs::remove(reads_file);
         if (!reads_file2.empty())
