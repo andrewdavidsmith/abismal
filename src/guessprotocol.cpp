@@ -188,7 +188,7 @@ struct ReadLoaderBase {
 
   bool good() const { return bool(in) && get_current_read() < n_reads; }
 
-  operator bool() const { return in; }
+  operator bool() const { return bool(in) && get_current_read() < n_reads; }
 
   size_t get_current_read() const {
     return static_cast<const T*>(this)->get_current_read_impl();
@@ -309,26 +309,26 @@ update_max_read_length(size_t &max_length, const vector<string> &reads) {
   for (auto &i : reads) max_length = max(max_length, i.size());
 }
 
-struct se_element {  // size = 8
+struct gp_se_element {  // size = 8
   score_t diffs;     // 2 bytes
   flags_t flags;     // 2 bytes
   uint32_t pos;      // 4 bytes
 
-  se_element(): diffs(MAX_DIFFS), flags(0), pos(0) {}
+  gp_se_element(): diffs(MAX_DIFFS), flags(0), pos(0) {}
 
-  se_element(const score_t d, const flags_t f, const uint32_t p)
+  gp_se_element(const score_t d, const flags_t f, const uint32_t p)
       : diffs(d), flags(f), pos(p) {}
 
-  bool operator==(const se_element &rhs) const {
+  bool operator==(const gp_se_element &rhs) const {
     return pos == rhs.pos && flags == rhs.flags;
   }
 
-  bool operator!=(const se_element &rhs) const {
+  bool operator!=(const gp_se_element &rhs) const {
     return pos != rhs.pos || flags != rhs.flags;
   }
 
   // this is used to keep PE candidates sorted in the max heap
-  bool operator<(const se_element &rhs) const { return diffs < rhs.diffs; }
+  bool operator<(const gp_se_element &rhs) const { return diffs < rhs.diffs; }
 
   inline bool rc() const { return samflags::check(flags, samflags::read_rc); }
 
@@ -361,12 +361,12 @@ struct se_element {  // size = 8
   static const score_t MAX_DIFFS;
 };
 
-double se_element::valid_frac = 0.1;
-const score_t se_element::MAX_DIFFS = std::numeric_limits<score_t>::max() - 1;
+double gp_se_element::valid_frac = 0.1;
+const score_t gp_se_element::MAX_DIFFS = std::numeric_limits<score_t>::max() - 1;
 
 // a liberal number of mismatches accepted to
 // align a read downstream
-const double se_element::invalid_hit_frac = 0.4;
+const double gp_se_element::invalid_hit_frac = 0.4;
 
 static inline score_t
 valid_diffs_cutoff(const uint32_t readlen, const double cutoff) {
@@ -375,22 +375,22 @@ valid_diffs_cutoff(const uint32_t readlen, const double cutoff) {
 
 static inline bool
 valid_len(const uint32_t aln_len, const uint32_t readlen) {
-  static const double min_aln_frac = 1.0 - se_element::invalid_hit_frac;
+  static const double min_aln_frac = 1.0 - gp_se_element::invalid_hit_frac;
 
   return aln_len >= max(ReadLoaderFastq::min_read_length,
                         static_cast<uint32_t>(min_aln_frac * readlen));
 }
 
 static inline bool
-valid(const se_element &s, const uint32_t aln_len, const uint32_t readlen,
+valid(const gp_se_element &s, const uint32_t aln_len, const uint32_t readlen,
       const double cutoff) {
   return valid_len(aln_len, readlen) &&
          s.diffs <= valid_diffs_cutoff(readlen, cutoff);
 }
 
 static inline bool
-valid_hit(const se_element s, const uint32_t readlen) {
-  return s.diffs < static_cast<score_t>(se_element::invalid_hit_frac * readlen);
+valid_hit(const gp_se_element s, const uint32_t readlen) {
+  return s.diffs < static_cast<score_t>(gp_se_element::invalid_hit_frac * readlen);
 }
 
 template<class T> static inline T
@@ -398,15 +398,15 @@ max16(const T x, const T y) {
   return (x > y) ? x : y;
 }
 
-struct se_candidates {
-  se_candidates(): sz(1), best(se_element()), v(vector<se_element>(max_size)) {}
+struct gp_se_candidates {
+  gp_se_candidates(): sz(1), best(gp_se_element()), v(vector<gp_se_element>(max_size)) {}
 
   inline bool full() const { return sz == max_size; };
 
   inline bool has_exact_match() const { return !best.empty(); };
 
   void update_exact_match(const flags_t s, const uint32_t p) {
-    const se_element cand(0, s, p);
+    const gp_se_element cand(0, s, p);
     if (best.empty())
       best = cand;  // cand has ambig flag set to false
 
@@ -427,9 +427,9 @@ struct se_candidates {
   void update_cand(const score_t d, const flags_t s, const uint32_t p) {
     if (full()) {
       pop_heap(begin(v), begin(v) + sz);
-      v[sz - 1] = se_element(d, s, p);
+      v[sz - 1] = gp_se_element(d, s, p);
     }
-    else { v[sz++] = se_element(d, s, p); }
+    else { v[sz++] = gp_se_element(d, s, p); }
     push_heap(begin(v), begin(v) + sz);
   }
 
@@ -467,7 +467,7 @@ struct se_candidates {
   // in SE reads, we sort to exclude duplicates
   void prepare_for_alignments() {
     sort(begin(v), begin(v) + sz,  // no sort_heap here as heapify used "diffs"
-         [](const se_element &a, const se_element &b) {
+         [](const gp_se_element &a, const gp_se_element &b) {
            return (a.pos < b.pos) || (a.pos == b.pos && a.flags < b.flags);
          });
     sz = unique(begin(v), begin(v) + sz) - begin(v);
@@ -477,13 +477,13 @@ struct se_candidates {
   score_t good_cutoff;
   score_t cutoff;
   uint32_t sz;
-  se_element best;
-  vector<se_element> v;
+  gp_se_element best;
+  vector<gp_se_element> v;
 
   static const uint32_t max_size;
 };
 
-const uint32_t se_candidates::max_size = 50u;
+const uint32_t gp_se_candidates::max_size = 50u;
 
 static inline uint32_t
 cigar_rseq_ops(const bam_cigar_t &cig) {
@@ -505,7 +505,7 @@ chrom_and_posn(const ChromLookup &cl, const bam_cigar_t &cig, const uint32_t p,
 enum map_type { map_unmapped, map_unique, map_ambig };
 
 static map_type
-format_se(const se_element &res, const ChromLookup &cl, const bam_cigar_t &cigar) {
+format_se(const gp_se_element &res, const ChromLookup &cl, const bam_cigar_t &cigar) {
   if (res.ambig()) return map_ambig;
   uint32_t ref_s = 0, ref_e = 0, chrom_idx = 0;
   if (res.empty() || !chrom_and_posn(cl, cigar, res.pos, ref_s, ref_e, chrom_idx))
@@ -513,8 +513,8 @@ format_se(const se_element &res, const ChromLookup &cl, const bam_cigar_t &cigar
   return map_unique;
 }
 
-struct pe_element {
-  pe_element(): aln_score(0), r1(se_element()), r2(se_element()) {}
+struct gp_pe_element {
+  gp_pe_element(): aln_score(0), r1(gp_se_element()), r2(gp_se_element()) {}
 
   score_t diffs() const { return r1.diffs + r2.diffs; }
 
@@ -531,7 +531,7 @@ struct pe_element {
     r2.reset();
   }
 
-  bool update(const score_t scr, const se_element &s1, const se_element &s2) {
+  bool update(const score_t scr, const gp_se_element &s1, const gp_se_element &s2) {
     if (scr > aln_score) {
       r1 = s1;
       r2 = s2;
@@ -562,23 +562,23 @@ struct pe_element {
 
   score_t aln_score;
   score_t max_aln_score;
-  se_element r1;
-  se_element r2;
+  gp_se_element r1;
+  gp_se_element r2;
 
   static uint32_t min_dist;
   static uint32_t max_dist;
 };
 
-uint32_t pe_element::min_dist = 32;
-uint32_t pe_element::max_dist = 3000;
+uint32_t gp_pe_element::min_dist = 32;
+uint32_t gp_pe_element::max_dist = 3000;
 
 static inline bool
-valid_pair(const pe_element &best, const uint32_t readlen1,
+valid_pair(const gp_pe_element &best, const uint32_t readlen1,
            const uint32_t readlen2, const uint32_t aln_len1,
            const uint32_t aln_len2) {
   return valid_len(aln_len1, readlen1) && valid_len(aln_len2, readlen2) &&
          best.diffs() <=
-           static_cast<score_t>(se_element::valid_frac * (aln_len1 + aln_len2));
+           static_cast<score_t>(gp_se_element::valid_frac * (aln_len1 + aln_len2));
 }
 
 /* The results passed into format_pe should be on opposite strands
@@ -597,7 +597,7 @@ valid_pair(const pe_element &best, const uint32_t readlen1,
  * conversion was used or the G->A (for PBAT or 2nd end of PE reads).
  */
 static map_type
-format_pe(const pe_element &p, const ChromLookup &cl,
+format_pe(const gp_pe_element &p, const ChromLookup &cl,
           const bam_cigar_t &cig1, const bam_cigar_t &cig2) {
 
   if (p.empty()) return map_unmapped;
@@ -615,7 +615,7 @@ format_pe(const pe_element &p, const ChromLookup &cl,
 }
 
 struct pe_candidates {
-  pe_candidates(): v(vector<se_element>(max_size_large)) {}
+  pe_candidates(): v(vector<gp_se_element>(max_size_large)) {}
 
   inline void reset(const uint32_t readlen) {
     v.front().reset(readlen);
@@ -653,7 +653,7 @@ struct pe_candidates {
         pop_heap(begin(v), begin(v) + sz--);
     }
 
-    v[sz++] = se_element(d, s, p);
+    v[sz++] = gp_se_element(d, s, p);
     push_heap(begin(v), begin(v) + sz);
 
     // update cutoff and sure_ambig
@@ -664,7 +664,7 @@ struct pe_candidates {
   void prepare_for_mating() {
     sort(
       begin(v), begin(v) + sz,  // no sort_heap here as heapify used "diffs"
-      [](const se_element &a, const se_element &b) { return a.pos < b.pos; });
+      [](const gp_se_element &a, const gp_se_element &b) { return a.pos < b.pos; });
     sz = unique(begin(v), begin(v) + sz) - begin(v);
   }
 
@@ -673,7 +673,7 @@ struct pe_candidates {
   score_t good_cutoff;
   uint32_t sz;
   uint32_t capacity;
-  vector<se_element> v;
+  vector<gp_se_element> v;
 
   static const uint32_t max_size_small = 32u;
   static const uint32_t max_size_large = (max_size_small) << 10u;
@@ -745,7 +745,7 @@ struct se_map_stats {
   double edit_distance_mean{};
 
   void update(const string &read,
-              const bam_cigar_t &cigar, const se_element s) {
+              const bam_cigar_t &cigar, const gp_se_element s) {
     ++total_reads;
     const bool valid = !s.empty();
     const bool ambig = s.ambig();
@@ -883,8 +883,8 @@ struct pe_map_stats {
 
   void update(const string &reads1,
               const string &reads2, const bam_cigar_t &cig1,
-              const bam_cigar_t &cig2, const pe_element &p, const se_element s1,
-              const se_element s2) {
+              const bam_cigar_t &cig2, const gp_pe_element &p, const gp_se_element s1,
+              const gp_se_element s2) {
     const bool valid = !p.empty();
     const bool ambig = p.ambig();
     total_read_pairs++;
@@ -962,8 +962,8 @@ struct pe_map_stats {
 static void
 select_output(const ChromLookup &cl,
               const bam_cigar_t &cig1,
-              const bam_cigar_t &cig2, pe_element &best, se_element &se1,
-              se_element &se2) {
+              const bam_cigar_t &cig2, gp_pe_element &best, gp_se_element &se1,
+              gp_se_element &se2) {
   const map_type pe_map_type = format_pe(best, cl, cig1, cig2);
 
   if (!best.should_report() || pe_map_type == map_unmapped) {
@@ -1307,9 +1307,9 @@ same_pos(const uint32_t pos1, const uint32_t pos2) {
 }
 
 static void
-align_se_candidates(const Read &pread_t, const Read &pread_t_rc,
+align_gp_se_candidates(const Read &pread_t, const Read &pread_t_rc,
                     const Read &pread_a, const Read &pread_a_rc,
-                    const double cutoff, se_candidates &res, se_element &best,
+                    const double cutoff, gp_se_candidates &res, gp_se_element &best,
                     bam_cigar_t &cigar, AbismalAlignSimple &aln) {
   const score_t readlen = static_cast<score_t>(pread_t.size());
   const score_t max_diffs = valid_diffs_cutoff(readlen, cutoff);
@@ -1325,8 +1325,8 @@ align_se_candidates(const Read &pread_t, const Read &pread_t_rc,
   uint32_t best_pos = 0;
 
   res.prepare_for_alignments();
-  vector<se_element>::const_iterator it(begin(res.v));
-  const vector<se_element>::const_iterator lim(it + res.sz);
+  vector<gp_se_element>::const_iterator it(begin(res.v));
+  const vector<gp_se_element>::const_iterator lim(it + res.sz);
 
   for (; it != lim && it->empty(); ++it)
     ;
@@ -1399,7 +1399,7 @@ map_single_ended(const AbismalIndex &abismal_index, ReadLoader &rl,
   // batch variables used in reporting the SAM entry
   vector<string> reads;
   vector<bam_cigar_t> cigar;
-  vector<se_element> bests;
+  vector<gp_se_element> bests;
 
   reads.reserve(ReadLoader::batch_size);
 
@@ -1409,7 +1409,7 @@ map_single_ended(const AbismalIndex &abismal_index, ReadLoader &rl,
   // pre-allocated variabes used idependently in each read
   Read pread, pread_rc;
   PackedRead packed_pread;
-  se_candidates res;
+  gp_se_candidates res;
   AbismalAlignSimple aln(genome_st);
 
   while (rl) {
@@ -1448,8 +1448,8 @@ map_single_ended(const AbismalIndex &abismal_index, ReadLoader &rl,
           (conv == t_rich) ? index_a_st : index_t_st, genome_st, pread_rc,
           packed_pread, res);
 
-        align_se_candidates(pread, pread_rc, pread, pread_rc,
-                            se_element::valid_frac, res, bests[i], cigar[i],
+        align_gp_se_candidates(pread, pread_rc, pread, pread_rc,
+                            gp_se_element::valid_frac, res, bests[i], cigar[i],
                             aln);
         if (format_se(bests[i], abismal_index.cl,
                       cigar[i]) == map_unmapped)
@@ -1481,7 +1481,7 @@ map_single_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl,
 
   vector<string> reads;
   vector<bam_cigar_t> cigar;
-  vector<se_element> bests;
+  vector<gp_se_element> bests;
 
   reads.reserve(ReadLoader::batch_size);
   cigar.resize(ReadLoader::batch_size);
@@ -1491,7 +1491,7 @@ map_single_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl,
   // and not used for reporting
   Read pread_t, pread_t_rc, pread_a, pread_a_rc;
   PackedRead packed_pread;
-  se_candidates res;
+  gp_se_candidates res;
   AbismalAlignSimple aln(genome_st);
 
   while (rl) {
@@ -1539,8 +1539,8 @@ map_single_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl,
           max_candidates, counter_st, counter_a_st, index_st, index_a_st,
           genome_st, pread_a_rc, packed_pread, res);
 
-        align_se_candidates(pread_t, pread_t_rc, pread_a, pread_a_rc,
-                            se_element::valid_frac, res, bests[i], cigar[i],
+        align_gp_se_candidates(pread_t, pread_t_rc, pread_a, pread_a_rc,
+                            gp_se_element::valid_frac, res, bests[i], cigar[i],
                             aln);
         if (format_se(bests[i], abismal_index.cl,
                       cigar[i]) == map_unmapped)
@@ -1571,7 +1571,7 @@ run_single_ended(const uint32_t n_reads, const string &adaptor_sequence,
 }
 
 static void
-best_single(const pe_candidates &pres, se_candidates &res) {
+best_single(const pe_candidates &pres, gp_se_candidates &res) {
   const auto lim(begin(pres.v) + pres.sz);
   for (auto i(begin(pres.v)); i != lim && !res.sure_ambig; ++i)
     res.update(false, i->diffs, i->flags, i->pos);
@@ -1581,13 +1581,13 @@ template<const bool swap_ends> static void
 best_pair(const pe_candidates &res1, const pe_candidates &res2,
           const Read &pread1, const Read &pread2, bam_cigar_t &cigar1,
           bam_cigar_t &cigar2, vector<score_t> &mem_scr1,
-          AbismalAlignSimple &aln, pe_element &best) {
-  vector<se_element>::const_iterator j1(begin(res1.v));
-  vector<se_element>::const_iterator j2(begin(res2.v));
+          AbismalAlignSimple &aln, gp_pe_element &best) {
+  vector<gp_se_element>::const_iterator j1(begin(res1.v));
+  vector<gp_se_element>::const_iterator j2(begin(res2.v));
 
-  const vector<se_element>::const_iterator j1_end = j1 + res1.sz;
-  const vector<se_element>::const_iterator j2_end = j2 + res2.sz;
-  const vector<se_element>::const_iterator j1_beg(j1);
+  const vector<gp_se_element>::const_iterator j1_end = j1 + res1.sz;
+  const vector<gp_se_element>::const_iterator j2_end = j2 + res2.sz;
+  const vector<gp_se_element>::const_iterator j1_beg(j1);
 
   // remembers alignment info on end1 to avoid redoing work
   const auto a1_beg(begin(mem_scr1));
@@ -1598,9 +1598,9 @@ best_pair(const pe_candidates &res1, const pe_candidates &res2,
   const uint32_t readlen1 = pread1.size();
   const uint32_t readlen2 = pread2.size();
   const score_t max_diffs1 =
-    valid_diffs_cutoff(readlen1, se_element::valid_frac);
+    valid_diffs_cutoff(readlen1, gp_se_element::valid_frac);
   const score_t max_diffs2 =
-    valid_diffs_cutoff(readlen2, se_element::valid_frac);
+    valid_diffs_cutoff(readlen2, gp_se_element::valid_frac);
 
   score_t scr1 = 0;
   score_t scr2 = 0;
@@ -1609,8 +1609,8 @@ best_pair(const pe_candidates &res1, const pe_candidates &res2,
   uint32_t best_pos1 = 0;
   uint32_t best_pos2 = 0;
 
-  se_element s1;
-  se_element s2;
+  gp_se_element s1;
+  gp_se_element s2;
 
   // GS: skips empty hits which are in the beginning
   // because empty hits, by definition, have pos = 0
@@ -1627,13 +1627,13 @@ best_pair(const pe_candidates &res1, const pe_candidates &res2,
     // many-to-many concordance between candidates
     const uint32_t lim = s2.pos + readlen2;
     for (; (j1 == j1_end) ||
-           (j1 != j1_beg && j1->pos + pe_element::max_dist >= lim);
+           (j1 != j1_beg && j1->pos + gp_pe_element::max_dist >= lim);
          --j1, --a1)
       ;
 
-    for (; j1 != j1_end && j1->pos + pe_element::max_dist < lim; ++j1, ++a1)
+    for (; j1 != j1_end && j1->pos + gp_pe_element::max_dist < lim; ++j1, ++a1)
       ;
-    for (; j1 != j1_end && j1->pos + pe_element::min_dist <= lim &&
+    for (; j1 != j1_end && j1->pos + gp_pe_element::min_dist <= lim &&
            !best.sure_ambig();
          ++j1, ++a1) {
       s1 = *j1;
@@ -1681,8 +1681,8 @@ best_pair(const pe_candidates &res1, const pe_candidates &res2,
 
     // last check if, after alignment, mates are still concordant
     const uint32_t frag_end = best_pos2 + len2;
-    if (frag_end >= best_pos1 + pe_element::min_dist &&
-        frag_end <= best_pos1 + pe_element::max_dist) {
+    if (frag_end >= best_pos1 + gp_pe_element::min_dist &&
+        frag_end <= best_pos1 + gp_pe_element::max_dist) {
       best.r1 = (swap_ends) ? (s2) : (s1);
       best.r2 = (swap_ends) ? (s1) : (s2);
     }
@@ -1694,8 +1694,8 @@ best_pair(const pe_candidates &res1, const pe_candidates &res2,
 template<const bool swap_ends> static bool
 select_maps(const Read &pread1, const Read &pread2, bam_cigar_t &cig1,
             bam_cigar_t &cig2, pe_candidates &res1, pe_candidates &res2,
-            vector<score_t> &mem_scr1, se_candidates &res_se1,
-            se_candidates &res_se2, AbismalAlignSimple &aln, pe_element &best) {
+            vector<score_t> &mem_scr1, gp_se_candidates &res_se1,
+            gp_se_candidates &res_se2, AbismalAlignSimple &aln, gp_pe_element &best) {
   if (res1.should_align() && res2.should_align()) {
     res1.prepare_for_mating();
     res2.prepare_for_mating();
@@ -1720,8 +1720,8 @@ map_fragments(const uint32_t max_candidates, const string &read1,
               PackedRead &packed_pread, bam_cigar_t &cigar1,
               bam_cigar_t &cigar2, AbismalAlignSimple &aln, pe_candidates &res1,
               pe_candidates &res2, vector<score_t> &mem_scr1,
-              se_candidates &res_se1, se_candidates &res_se2,
-              pe_element &best) {
+              gp_se_candidates &res_se1, gp_se_candidates &res_se2,
+              gp_pe_element &best) {
   res1.reset(read1.size());
   res2.reset(read2.size());
 
@@ -1771,9 +1771,9 @@ map_paired_ended(const AbismalIndex &abismal_index, ReadLoader &rl1,
   vector<bam_cigar_t> cigar1;
   vector<bam_cigar_t> cigar2;
 
-  vector<pe_element> bests;
-  vector<se_element> bests_se1;
-  vector<se_element> bests_se2;
+  vector<gp_pe_element> bests;
+  vector<gp_se_element> bests_se1;
+  vector<gp_se_element> bests_se2;
 
   reads1.reserve(ReadLoader::batch_size);
   cigar1.resize(ReadLoader::batch_size);
@@ -1795,8 +1795,8 @@ map_paired_ended(const AbismalIndex &abismal_index, ReadLoader &rl1,
   pe_candidates res1;
   pe_candidates res2;
   vector<score_t> mem_scr1(res1.v.size());
-  se_candidates res_se1;
-  se_candidates res_se2;
+  gp_se_candidates res_se1;
+  gp_se_candidates res_se2;
 
   while (rl1 && rl2) {
 #pragma omp critical
@@ -1862,12 +1862,12 @@ map_paired_ended(const AbismalIndex &abismal_index, ReadLoader &rl1,
         bests[i].reset();
 
       if (!bests[i].should_report()) {
-        align_se_candidates(pread1, pread1_rc, pread1, pread1_rc,
-                            se_element::valid_frac / 2.0, res_se1, bests_se1[i],
+        align_gp_se_candidates(pread1, pread1_rc, pread1, pread1_rc,
+                            gp_se_element::valid_frac / 2.0, res_se1, bests_se1[i],
                             cigar1[i], aln);
 
-        align_se_candidates(pread2, pread2_rc, pread2, pread2_rc,
-                            se_element::valid_frac / 2.0, res_se2, bests_se2[i],
+        align_gp_se_candidates(pread2, pread2_rc, pread2, pread2_rc,
+                            gp_se_element::valid_frac / 2.0, res_se2, bests_se2[i],
                             cigar2[i], aln);
       }
 
@@ -1905,9 +1905,9 @@ map_paired_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl1,
   vector<bam_cigar_t> cigar1;
   vector<bam_cigar_t> cigar2;
 
-  vector<pe_element> bests;
-  vector<se_element> bests_se1;
-  vector<se_element> bests_se2;
+  vector<gp_pe_element> bests;
+  vector<gp_se_element> bests_se1;
+  vector<gp_se_element> bests_se2;
 
   reads1.reserve(ReadLoader::batch_size);
   cigar1.resize(ReadLoader::batch_size);
@@ -1927,8 +1927,8 @@ map_paired_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl1,
   pe_candidates res2;
   AbismalAlignSimple aln(genome_st);
   vector<score_t> mem_scr1(res1.v.size());
-  se_candidates res_se1;
-  se_candidates res_se2;
+  gp_se_candidates res_se1;
+  gp_se_candidates res_se2;
 
   while (rl1 && rl2) {
 #pragma omp critical
@@ -2009,11 +2009,11 @@ map_paired_ended_rand(const AbismalIndex &abismal_index, ReadLoader &rl1,
         bests[i].reset();
 
       if (!bests[i].should_report()) {
-        align_se_candidates(pread1_t, pread1_t_rc, pread1_a, pread1_a_rc,
-                            se_element::valid_frac / 2.0, res_se1, bests_se1[i],
+        align_gp_se_candidates(pread1_t, pread1_t_rc, pread1_a, pread1_a_rc,
+                            gp_se_element::valid_frac / 2.0, res_se1, bests_se1[i],
                             cigar1[i], aln);
-        align_se_candidates(pread2_t, pread2_t_rc, pread2_a, pread2_a_rc,
-                            se_element::valid_frac / 2.0, res_se2, bests_se2[i],
+        align_gp_se_candidates(pread2_t, pread2_t_rc, pread2_a, pread2_a_rc,
+                            gp_se_element::valid_frac / 2.0, res_se2, bests_se2[i],
                             cigar2[i], aln);
       }
       select_output(abismal_index.cl, cigar1[i], cigar2[i], bests[i],
@@ -2075,8 +2075,105 @@ format_key_value(const string key, const T value) {
   return oss.str();
 }
 
+auto
+guessprotocol(const bool fasta, const uint32_t n_reads,
+              const double mapping_cutoff_for_quality,
+              const double min_fraction_mapping_for_protocol,
+              const AbismalIndex &abismal_index, const string &adaptor_sequence,
+              const string &reads_file, const string &reads_file2,
+              const string &outfile) -> int {
+  // avoiding opening the stats output file until mapping is done
+  se_map_stats se_stats_wgbs;
+  pe_map_stats pe_stats_wgbs;
+
+  se_map_stats se_stats_pbat;
+  pe_map_stats pe_stats_pbat;
+
+  se_map_stats se_stats_rpbat;
+  pe_map_stats pe_stats_rpbat;
+
+  if (fasta) {
+    using TT = ReadLoaderFasta;
+    if (reads_file2.empty()) {
+      run_single_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
+                                          abismal_index, se_stats_pbat);
+      run_single_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
+                                          abismal_index, se_stats_wgbs);
+    }
+    else {
+      run_paired_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
+                                          reads_file2, abismal_index,
+                                          pe_stats_pbat);
+      run_paired_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
+                                          reads_file2, abismal_index,
+                                          pe_stats_wgbs);
+    }
+  }
+  else {
+    using TT = ReadLoaderFastq;
+    if (reads_file2.empty()) {
+      run_single_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
+                                          abismal_index, se_stats_pbat);
+      run_single_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
+                                          abismal_index, se_stats_wgbs);
+    }
+    else {
+      run_paired_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
+                                          reads_file2, abismal_index,
+                                          pe_stats_pbat);
+      run_paired_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
+                                          reads_file2, abismal_index,
+                                          pe_stats_wgbs);
+    }
+  }
+
+  se_stats_wgbs.assign_values();
+  se_stats_pbat.assign_values();
+  se_stats_rpbat.assign_values();
+
+  pe_stats_wgbs.assign_values();
+  pe_stats_pbat.assign_values();
+  pe_stats_rpbat.assign_values();
+
+  const double wgbs = reads_file2.empty()
+                        ? se_stats_wgbs.reads_mapped_fraction
+                        : pe_stats_wgbs.read_pairs_mapped_fraction;
+  const double pbat = reads_file2.empty()
+                        ? se_stats_pbat.reads_mapped_fraction
+                        : pe_stats_pbat.read_pairs_mapped_fraction;
+  const double total = wgbs + pbat;
+  const string quality_check =
+    (total / 100.0 < mapping_cutoff_for_quality) ? "fail" : "pass";
+  const string guess =
+    (wgbs / total > min_fraction_mapping_for_protocol)
+      ? "wgbs"
+      : (pbat / total > min_fraction_mapping_for_protocol ? "pbat" : "rpbat");
+
+  if (!outfile.empty()) {
+    std::ofstream out(outfile);
+    if (!out) throw runtime_error("failed to open output file: " + outfile);
+    // clang-format off
+    out << '{'
+        << format_key_value("wgbs_fraction_mapped", wgbs)
+        << ','
+        << format_key_value("pbat_fraction_mapped", pbat)
+        << ','
+        << format_key_value("wgbs_proportion", wgbs/total)
+        << ','
+        << format_key_value("pbat_proportion", pbat/total)
+        << ','
+        << format_key_value("quality_check", quality_check)
+        << ','
+        << format_key_value("protocol_guess", guess)
+        << '}'
+        << '\n';
+    // clang-format on
+  }
+  return guess == "wgbs" ? 0 : guess == "pbat" ? 1 : 2;
+}
+
 int
-main(int argc, const char **argv) {
+guessprotocol_main(int argc, const char **argv) {
   try {
     bool VERBOSE = false;
     int n_threads = 1;
@@ -2096,10 +2193,9 @@ main(int argc, const char **argv) {
                            "<reads-fq1> [<reads-fq2>]");
     opt_parse.set_show_defaults();
     opt_parse.add_opt("index", 'i', "index file", true, index_file);
-    opt_parse.add_opt("output", 'o', "output file (json)", false,
-                      outfile);
-    opt_parse.add_opt("n-reads", 'n', "number of reads to consider",
-                      false, n_reads);
+    opt_parse.add_opt("output", 'o', "output file (json)", false, outfile);
+    opt_parse.add_opt("n-reads", 'n', "number of reads to consider", false,
+                      n_reads);
     opt_parse.add_opt("max-candidates", 'c',
                       "max candidates per seed "
                       "(0 = use index estimate)",
@@ -2109,15 +2205,15 @@ main(int argc, const char **argv) {
     opt_parse.add_opt("min-map", 'M', "min mapping required", false,
                       mapping_cutoff_for_quality);
     opt_parse.add_opt("min-frag", 'l', "min fragment size (pe mode)", false,
-                      pe_element::min_dist);
+                      gp_pe_element::min_dist);
     opt_parse.add_opt("max-frag", 'L', "max fragment size (pe mode)", false,
-                      pe_element::max_dist);
+                      gp_pe_element::max_dist);
     opt_parse.add_opt("max-distance", 'm', "max fractional edit distance",
-                      false, se_element::valid_frac);
-    opt_parse.add_opt("trim", '\0', "trim adaptors from reads",
-                      false, trim_adaptors);
-    opt_parse.add_opt("adap", '\0', "use this as adaptor",
-                      false, adaptor_sequence);
+                      false, gp_se_element::valid_frac);
+    opt_parse.add_opt("trim", '\0', "trim adaptors from reads", false,
+                      trim_adaptors);
+    opt_parse.add_opt("adap", '\0', "use this as adaptor", false,
+                      adaptor_sequence);
     opt_parse.add_opt("threads", 't', "number of threads", false, n_threads);
     opt_parse.add_opt("verbose", 'v', "print more run info", false, VERBOSE);
     vector<string> leftover_args;
@@ -2209,105 +2305,9 @@ main(int argc, const char **argv) {
       abismal_index.max_candidates = max_candidates;
     }
 
-    // avoiding opening the stats output file until mapping is done
-    se_map_stats se_stats_wgbs;
-    pe_map_stats pe_stats_wgbs;
-
-    se_map_stats se_stats_pbat;
-    pe_map_stats pe_stats_pbat;
-
-    se_map_stats se_stats_rpbat;
-    pe_map_stats pe_stats_rpbat;
-
-    if (fasta) {
-      using TT = ReadLoaderFasta;
-      if (reads_file2.empty()) {
-        if (VERBOSE)
-          print_with_time("running pbat");
-        run_single_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
-                                            abismal_index, se_stats_pbat);
-        if (VERBOSE)
-          print_with_time("running wgbs");
-        run_single_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
-                                            abismal_index, se_stats_wgbs);
-      }
-      else {
-        if (VERBOSE)
-          print_with_time("running pbat");
-        run_paired_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
-                                            reads_file2, abismal_index, pe_stats_pbat);
-        if (VERBOSE)
-          print_with_time("running wgbs");
-        run_paired_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
-                                            reads_file2, abismal_index, pe_stats_wgbs);
-      }
-    }
-    else {
-      using TT = ReadLoaderFastq;
-      if (reads_file2.empty()) {
-        if (VERBOSE)
-          print_with_time("running pbat");
-        run_single_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
-                                            abismal_index, se_stats_pbat);
-        if (VERBOSE)
-          print_with_time("running wgbs");
-        run_single_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
-                                            abismal_index, se_stats_wgbs);
-      }
-      else {
-        if (VERBOSE)
-          print_with_time("running pbat");
-        run_paired_ended<a_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
-                                            reads_file2, abismal_index, pe_stats_pbat);
-        if (VERBOSE)
-          print_with_time("running wgbs");
-        run_paired_ended<t_rich, false, TT>(n_reads, adaptor_sequence, reads_file,
-                                            reads_file2, abismal_index, pe_stats_wgbs);
-      }
-    }
-
-    se_stats_wgbs.assign_values();
-    se_stats_pbat.assign_values();
-    se_stats_rpbat.assign_values();
-
-    pe_stats_wgbs.assign_values();
-    pe_stats_pbat.assign_values();
-    pe_stats_rpbat.assign_values();
-
-    std::ofstream of;
-    if (!outfile.empty()) of.open(outfile);
-    std::ostream out(outfile.empty() ? std::cout.rdbuf() : of.rdbuf());
-    if (!out) throw runtime_error("failed to open output file: " + outfile);
-
-    const double wgbs = reads_file2.empty()
-                          ? se_stats_wgbs.reads_mapped_fraction
-                          : pe_stats_wgbs.read_pairs_mapped_fraction;
-    const double pbat = reads_file2.empty()
-                          ? se_stats_pbat.reads_mapped_fraction
-                          : pe_stats_pbat.read_pairs_mapped_fraction;
-    const double total = wgbs + pbat;
-    const string quality_check =
-      (total / 100.0 < mapping_cutoff_for_quality) ? "fail" : "pass";
-    const string guess =
-      (wgbs / total > min_fraction_mapping_for_protocol)
-        ? "wgbs"
-        : (pbat / total > min_fraction_mapping_for_protocol ? "pbat" : "rpbat");
-    // clang-format off
-    out << '{'
-        << format_key_value("wgbs_fraction_mapped", wgbs)
-        << ','
-        << format_key_value("pbat_fraction_mapped", pbat)
-        << ','
-        << format_key_value("wgbs_proportion", wgbs/total)
-        << ','
-        << format_key_value("pbat_proportion", pbat/total)
-        << ','
-        << format_key_value("quality_check", quality_check)
-        << ','
-        << format_key_value("protocol_guess", guess)
-        << '}'
-        << '\n';
-    // clang-format on
+    guessprotocol(fasta, n_reads, mapping_cutoff_for_quality,
+                  min_fraction_mapping_for_protocol, abismal_index,
+                  adaptor_sequence, reads_file, reads_file2, outfile);
   }
   catch (const runtime_error &e) {
     cerr << e.what() << endl;

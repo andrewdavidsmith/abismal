@@ -15,7 +15,22 @@
  * General Public License for more details.
  */
 
-#ifndef _ABISMAL_HPP
-#define _ABISMAL_HPP
-int abismal(int argc, const char **argv);
+#ifndef GUESSPROTOCOL_HPP
+#define GUESSPROTOCOL_HPP
+
+#include "AbismalIndex.hpp"
+#include <cstdint>
+#include <string>
+
+auto
+guessprotocol(const bool fasta, const std::uint32_t n_reads,
+              const double mapping_cutoff_for_quality,
+              const double min_fraction_mapping_for_protocol,
+              const AbismalIndex &abismal_index, const std::string &adaptor_sequence,
+              const std::string &reads_file, const std::string &reads_file2,
+              const std::string &outfile) -> int;
+
+int
+guessprotocol_main(const int argc, const char **argv);
+
 #endif

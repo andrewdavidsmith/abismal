@@ -16,6 +16,7 @@
  */
 
 #include "abismal.hpp"
+#include "guessprotocol.hpp"
 
 #include <config.h>
 #include <omp.h>
@@ -30,6 +31,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <regex>
 
 #include "AbismalAlign.hpp"
 #include "AbismalIndex.hpp"
@@ -70,6 +72,8 @@ using bamxx::bam_rec;
 
 using AbismalAlignSimple =
   AbismalAlign<simple_aln::mismatch_score, simple_aln::indel>;
+
+namespace fs = std::filesystem;
 
 typedef uint16_t flags_t;      // every bit is a flag
 typedef int16_t score_t;       // aln score, edit distance, hamming distance
@@ -179,8 +183,7 @@ merge_mates(bam_rec &one, bam_rec &two, bam_rec &merged) {
 
 /********Above are functions for merging pair-end reads********/
 
-
-static void
+static inline void
 print_with_time(const string &s) {
   auto tmp = system_clock::to_time_t(system_clock::now());
   string time_fmt(std::ctime(&tmp));
@@ -321,27 +324,75 @@ struct adaptor_trimmer {
     uint32_t start = std::min(std::max(qstart, nstart), stop);
     read = read.substr(start, stop - start);
   }
+  void operator()(string &read) const {
+    // uint32_t qstart = 0;
+    // uint32_t qstop = 0;
+    // qual_trim(qual, 0, 20, qstart, qstop);
+    uint32_t nstart = read.find_first_not_of("N");
+    uint32_t nstop = read.find_last_not_of("N") + 1;
+    uint32_t stop = nstop; // std::min(qstop, nstop);
+    uint32_t adaptor_start = naive_matching(read.substr(0, stop));
+    stop = std::min(stop, adaptor_start);
+    nstop = read.substr(0, stop).find_last_not_of("N") + 1;
+    stop = std::min(stop, nstop);
+    read.resize(nstop);
+    uint32_t start = std::min(nstart, stop); // std::max(qstart, nstart), stop);
+    read = read.substr(start, stop - start);
+
+    // read.resize(read.find_last_not_of("N") + 1);  // remove trailing N
+    // read.resize(naive_matching(read));            // remove adaptor
+    // read.resize(read.find_last_not_of("N") + 1);  // remove trailing N
+    // read = read.substr(read.find_first_not_of("N"));  // remove leading N
+  }
   operator bool() const {
     return n > 0;
   }
 };
 
-
-struct ReadLoader {
-  ReadLoader(const string &fn, const string &adaptor):
+template<typename T>
+struct ReadLoaderBase {
+  ReadLoaderBase(const string &fn, const string &adaptor):
     cur_line{0}, filename{fn}, in{fn, "r"},
     trimmer(adaptor) {}
-  ReadLoader(const string &fn): cur_line{0}, filename{fn}, in{fn, "r"} {}
+  ReadLoaderBase(const string &fn): cur_line{0}, filename{fn}, in{fn, "r"} {}
 
   bool good() const { return in; }
 
   operator bool() const { return in; }
 
-  size_t get_current_read() const { return cur_line / 4; }
+  size_t get_current_read() const {
+    return static_cast<const T*>(this)->get_current_read_impl();
+  }
 
   size_t get_current_byte() const { return in.tellg(); }
 
   void load_reads(vector<string> &names, vector<string> &reads) {
+    static_cast<T*>(this)->load_reads_impl(names, reads);
+  }
+
+  uint32_t cur_line;
+  string filename;
+  bamxx::bgzf_file in;
+  adaptor_trimmer trimmer;
+
+  static const size_t batch_size = 1000;
+  static const uint32_t min_read_length = seed::key_weight + seed::window_size - 1;
+};
+
+// const size_t ReadLoaderBase::batch_size = 1000;
+
+// GS: minimum length which an exact match can be
+// guaranteed to map
+// const uint32_t ReadLoaderBase::min_read_length =
+//   seed::key_weight + seed::window_size - 1;
+
+struct ReadLoaderFastq : ReadLoaderBase<ReadLoaderFastq> {
+  ReadLoaderFastq(const string &fn, const string &adaptor) :
+    ReadLoaderBase<ReadLoaderFastq>(fn, adaptor) {}
+  ReadLoaderFastq(const string &fn) : ReadLoaderBase<ReadLoaderFastq>(fn) {}
+
+  size_t get_current_read_impl() const { return cur_line / 4; }
+  void load_reads_impl(vector<string> &names, vector<string> &reads) {
     reads.clear();
     names.clear();
 
@@ -382,22 +433,51 @@ struct ReadLoader {
       ++cur_line;
     }
   }
-
-  uint32_t cur_line;
-  string filename;
-  bamxx::bgzf_file in;
-  adaptor_trimmer trimmer;
-
-  static const size_t batch_size;
-  static const uint32_t min_read_length;
 };
 
-const size_t ReadLoader::batch_size = 1000;
+struct ReadLoaderFasta : ReadLoaderBase<ReadLoaderFasta> {
+  ReadLoaderFasta(const string &fn, const string &adaptor) :
+    ReadLoaderBase<ReadLoaderFasta>(fn, adaptor) {}
+  ReadLoaderFasta(const string &fn) : ReadLoaderBase<ReadLoaderFasta>(fn) {}
 
-// GS: minimum length which an exact match can be
-// guaranteed to map
-const uint32_t ReadLoader::min_read_length =
-  seed::key_weight + seed::window_size - 1;
+  size_t get_current_read_impl() const { return cur_line / 2; }
+  void load_reads_impl(vector<string> &names, vector<string> &reads) {
+    reads.clear();
+    names.clear();
+
+    size_t line_count = 0;
+    const size_t num_lines_to_read = 2 * batch_size;
+    string line;
+    string read;
+    while (line_count < num_lines_to_read && getline(in, line)) {
+      if (line_count % 2 == 1) {
+        read.swap(line);
+        // read too long, may pass the end of the genome
+        if (read.size() >= seed::padding_size)
+          throw runtime_error(
+            "found a read of size " + to_string(read.size()) +
+            ", which is too long. Maximum allowed read size = " +
+            to_string(seed::padding_size));
+        if (trimmer)
+          trimmer(read);
+        if (read.size() < min_read_length ||
+            count_if(cbegin(read), cend(read),
+                     [](const char c) { return c != 'N'; }) < min_read_length)
+          read.clear();
+        reads.emplace_back(read);
+      }
+      else { // if (line_count % 2 == 0) {
+        if (line.empty())
+          throw runtime_error("file " + filename + " contains an empty " +
+                              "read name at line " + to_string(cur_line));
+        names.emplace_back(line.substr(1, line.find_first_of(" \t") - 1));
+      }
+      ++line_count;
+      ++cur_line;
+    }
+  }
+};
+
 
 // GS: used to allocate the appropriate dimensions of the banded
 // alignment matrix for a batch of reads
@@ -474,7 +554,7 @@ static inline bool
 valid_len(const uint32_t aln_len, const uint32_t readlen) {
   static const double min_aln_frac = 1.0 - se_element::invalid_hit_frac;
 
-  return aln_len >= max(ReadLoader::min_read_length,
+  return aln_len >= max(ReadLoaderFastq::min_read_length,
                         static_cast<uint32_t>(min_aln_frac * readlen));
 }
 
@@ -996,7 +1076,7 @@ struct se_map_stats {
     percent_skipped = pct(skipped_reads, total_reads);
   }
 
-  string tostring(const size_t n_tabs = 0) {
+  string tostring(const string &protocol, const size_t n_tabs = 0) {
     static constexpr auto tab = "    ";
 
     assign_values();
@@ -1004,6 +1084,8 @@ struct se_map_stats {
     string t;
     for (size_t i = 0; i < n_tabs; ++i) t += tab;
     ostringstream oss;
+    if (!protocol.empty())
+      oss << t << "protocol: " << protocol << endl;
     // clang-format off
     oss << t << "total_reads: " << total_reads << endl
         << t << "mapped: " << endl
@@ -1144,12 +1226,15 @@ struct pe_map_stats {
     percent_skipped_pairs = pct(read_pairs_skipped, total_read_pairs_tmp);
   }
 
-  string tostring(const bool allow_ambig) {
+  string tostring(const string &protocol, const bool allow_ambig) {
     static string t = "    ";
 
     assign_values();
 
     ostringstream oss;
+
+    if (!protocol.empty())
+      oss << "protocol: " << protocol << endl;
     oss << "pairs:" << endl
         << t << "total_pairs: " << total_read_pairs << endl
         << t << "mapped:" << endl
@@ -1172,8 +1257,8 @@ struct pe_map_stats {
 
     if (!allow_ambig)
       oss << "mate1:" << endl
-          << end1_stats.tostring(1) << "mate2:" << endl
-          << end2_stats.tostring(1);
+          << end1_stats.tostring(string(), 1) << "mate2:" << endl
+          << end2_stats.tostring(string(), 1);
     return oss.str();
   }
 };
@@ -1604,7 +1689,8 @@ reset_bam_rec(bam_rec &b) {
   b.b = nullptr;
 }
 
-template<const conversion_type conv> static void
+template<const conversion_type conv, typename ReadLoader = ReadLoaderFastq>
+static void
 map_single_ended(const bool show_progress, const bool allow_ambig,
                  const AbismalIndex &abismal_index, ReadLoader &rl,
                  se_map_stats &se_stats, bamxx::bam_header &hdr,
@@ -1710,6 +1796,7 @@ map_single_ended(const bool show_progress, const bool allow_ambig,
   }
 }
 
+template<typename ReadLoader = ReadLoaderFastq>
 static void
 map_single_ended_rand(const bool show_progress, const bool allow_ambig,
                       const AbismalIndex &abismal_index, ReadLoader &rl,
@@ -1832,7 +1919,8 @@ format_time_in_sec(const double t) {
   return oss.str();
 }
 
-template<const conversion_type conv, const bool random_pbat> static void
+template<const conversion_type conv, const bool rpbat_mode,
+         typename ReadLoader = ReadLoaderFastq> static void
 run_single_ended(const string &adaptor_sequence,
                  const bool show_progress, const bool allow_ambig,
                  const string &reads_file, const AbismalIndex &abismal_index,
@@ -1845,7 +1933,7 @@ run_single_ended(const string &adaptor_sequence,
 
 #pragma omp parallel for
   for (int i = 0; i < omp_get_num_threads(); ++i) {
-    if (random_pbat)
+    if (rpbat_mode)
       map_single_ended_rand(show_progress, allow_ambig, abismal_index, rl,
                             se_stats, hdr, out, progress);
     else
@@ -2037,7 +2125,7 @@ map_fragments(const uint32_t max_candidates, const string &read1,
                                 mem_scr1, res_se1, res_se2, aln, best);
 }
 
-template<const conversion_type conv> static void
+template<const conversion_type conv, typename ReadLoader = ReadLoaderFastq> static void
 map_paired_ended(const bool show_progress, const bool allow_ambig,
                  const AbismalIndex &abismal_index, ReadLoader &rl1,
                  ReadLoader &rl2, pe_map_stats &pe_stats,
@@ -2225,6 +2313,7 @@ map_paired_ended(const bool show_progress, const bool allow_ambig,
   }
 }
 
+template<typename ReadLoader = ReadLoaderFastq>
 static void
 map_paired_ended_rand(const bool show_progress, const bool allow_ambig,
                       const AbismalIndex &abismal_index, ReadLoader &rl1,
@@ -2422,7 +2511,8 @@ map_paired_ended_rand(const bool show_progress, const bool allow_ambig,
   }
 }
 
-template<const conversion_type conv, const bool random_pbat> static void
+template<const conversion_type conv, const bool rpbat_mode, typename ReadLoader = ReadLoaderFastq>
+static void
 run_paired_ended(const string &adaptor_sequence,
                  const bool show_progress, const bool allow_ambig,
                  const string &reads_file1, const string &reads_file2,
@@ -2436,7 +2526,7 @@ run_paired_ended(const string &adaptor_sequence,
 
 #pragma omp parallel for
   for (int i = 0; i < omp_get_num_threads(); ++i) {
-    if (random_pbat)
+    if (rpbat_mode)
       map_paired_ended_rand(show_progress, allow_ambig, abismal_index, rl1, rl2,
                             pe_stats, hdr, out, progress);
 
@@ -2495,14 +2585,81 @@ abismal_make_sam_header(const ChromLookup &cl, const int argc,
   return sam_hdr_add_lines(hdr.h, out.str().c_str(), out.str().size());
 }
 
+static bool
+is_fasta_file(const string &filename) {
+  bamxx::bgzf_file in{filename, "r"};
+  if (!in) throw runtime_error("failed to open file: " + filename);
+  string line;
+  if (!getline(in, line))
+    throw runtime_error("failed to read from file: " + filename);
+  return line[0] == '>';
+}
+
+static auto
+get_reads_files(const string &dirname, const string &accession) -> vector<string> {
+  // static constexpr auto end_pt = "(_1|_2|_1_val_1|_2_val_2|_trimmed)?";
+  // static constexpr auto suff_pt = "(fa|fq|fasta|fastq)";
+  // static constexpr auto gz_pt = "(.gz)?";
+  // const auto runs_file_ptrn =
+  //   format("^{}{}.{}{}$", accession, end_pt, suff_pt, gz_pt);
+
+  const auto runs_file_ptrn =
+    string("^") + accession +
+    string("(_1|_2|_1_val_1|_2_val_2|_trimmed)?.(fa|fq|fasta|fastq)(.gz)?$");
+
+  std::regex runs_file_re(runs_file_ptrn);
+
+  vector<string> filenames;
+  for (auto const &dir_entry : fs::directory_iterator{dirname}) {
+    const string fn = fs::path{dir_entry}.filename();
+    std::smatch m;
+    std::regex_search(fn, m, runs_file_re);
+    if (!m.empty())
+      filenames.emplace_back(fs::canonical(dir_entry.path()));
+  }
+
+  sort(begin(filenames), end(filenames));
+
+  if (size(filenames) == 1)
+    return filenames;
+
+  if (size(filenames) > 2) {
+    // this is in case we have both a '.fastq' and also '_1.fastq' and
+    // '_2.fastq' because of --split-3
+    filenames.erase(std::remove_if(begin(filenames), end(filenames),
+                                   [](const string &s) {
+                                     return s.find('_') == string::npos;
+                                   }), end(filenames));
+  }
+
+  if (size(filenames) != 2 || size(filenames.front()) != size(filenames.back()))
+    return {};
+
+  // count underscores only in the filename part of the path
+  const string fn1 = fs::path{filenames.front()}.filename();
+  const string fn2 = fs::path{filenames.back()}.filename();
+  const auto n_underscore1 = std::count(cbegin(fn1), cend(fn1), '_');
+  const auto n_underscore2 = std::count(cbegin(fn2), cend(fn2), '_');
+
+  if (n_underscore1 != n_underscore2)
+    return {};
+
+  if (std::transform_reduce(cbegin(fn1), cend(fn1), cbegin(fn2), 0, std::plus{},
+                            std::not_equal_to{}) != n_underscore1)
+    return {};
+
+  return filenames;
+}
+
 int
 abismal(int argc, const char **argv) {
   try {
     bool VERBOSE = false;
     bool GA_conversion = false;
     bool allow_ambig = false;
+    bool wgbs_mode = false;
     bool pbat_mode = false;
-    bool random_pbat = false;
+    bool rpbat_mode = false;
     bool write_bam_fmt = false;
     int n_threads = 1;
     uint32_t max_candidates = 0;
@@ -2513,6 +2670,7 @@ abismal(int argc, const char **argv) {
 
     string adaptor_sequence{"AGATCGGAAGAGC"};
     bool trim_adaptors = false;
+    bool remove_input_files{false};
 
     /****************** COMMAND LINE OPTIONS ********************/
     OptionParser opt_parse(strip_path(argv[0]), "map bisulfite converted reads",
@@ -2540,12 +2698,16 @@ abismal(int argc, const char **argv) {
                       false, trim_adaptors);
     opt_parse.add_opt("adap", '\0', "use this as adaptor",
                       false, adaptor_sequence);
+    opt_parse.add_opt("wgbs", 'W', "input follows the WGBS protocol", false,
+                      wgbs_mode);
     opt_parse.add_opt("pbat", 'P', "input follows the PBAT protocol", false,
                       pbat_mode);
     opt_parse.add_opt("random-pbat", 'R', "input follows random PBAT protocol",
-                      false, random_pbat);
+                      false, rpbat_mode);
     opt_parse.add_opt("a-rich", 'A', "indicates reads are a-rich (se mode)",
                       false, GA_conversion);
+    opt_parse.add_opt("remove-input", '\0', "remove input file on success",
+                      false, remove_input_files);
     opt_parse.add_opt("threads", 't', "number of threads", false, n_threads);
     opt_parse.add_opt("verbose", 'v', "print more run info", false, VERBOSE);
     vector<string> leftover_args;
@@ -2581,24 +2743,44 @@ abismal(int argc, const char **argv) {
     if (!trim_adaptors)
       adaptor_sequence.clear();
 
-    const string reads_file = leftover_args.front();
+    string reads_file = leftover_args.front();
     string reads_file2;
 
-    if (!file_exists(reads_file)) {
-      cerr << "cannot open read 1 FASTQ file: " << reads_file << endl;
-      return EXIT_FAILURE;
-    }
+    // if (!file_exists(reads_file)) {
+    //   cerr << "cannot open read 1 FASTQ file: " << reads_file << endl;
+    //   return EXIT_FAILURE;
+    // }
     bool paired_end = false;
     if (leftover_args.size() == 2) {
       paired_end = true;
       reads_file2 = leftover_args.back();
-
+      if (!file_exists(reads_file)) {
+        cerr << "cannot open read 1 FASTQ file: " << reads_file << endl;
+        return EXIT_FAILURE;
+      }
       if (!file_exists(reads_file2)) {
         cerr << "cannot open read 2 FASTQ file: " << reads_file2 << endl;
         return EXIT_FAILURE;
       }
     }
     /****************** END COMMAND LINE OPTIONS *****************/
+
+    if (reads_file2.empty() && !fs::exists(reads_file)) {
+      const auto reads_dir = fs::path{reads_file}.parent_path();
+      const auto accession = fs::path{reads_file}.filename();
+      const auto reads_files = get_reads_files(reads_dir, accession);
+      if (size(reads_files) == 1)
+        reads_file = reads_dir/fs::path{reads_files[0]};
+      else if (size(reads_files) == 2) {
+        reads_file = reads_dir/fs::path{reads_files[0]};
+        reads_file2 = reads_dir/fs::path{reads_files[1]};
+        paired_end = true;
+      }
+      else {
+        cerr << "failed to identify reads files from: " << reads_file << endl;
+        return EXIT_FAILURE;
+      }
+    }
 
     /****************** BEGIN THREAD VALIDATION *****************/
     omp_set_num_threads(n_threads);
@@ -2619,6 +2801,10 @@ abismal(int argc, const char **argv) {
       print_with_time("using " + to_string(num_threads_fulfilled) +
                       " threads to map reads.");
     /****************** END THREAD VALIDATION *****************/
+
+    const bool fasta = is_fasta_file(reads_file);
+    if (VERBOSE)
+      print_with_time("input format: " + string(fasta ? "fasta" : "fastq"));
 
     const bool show_progress = VERBOSE && isatty(fileno(stderr));
 
@@ -2664,6 +2850,23 @@ abismal(int argc, const char **argv) {
       abismal_index.max_candidates = max_candidates;
     }
 
+    string guessed_protocol;
+    if (!wgbs_mode && !pbat_mode && !rpbat_mode) {
+      print_with_time("guessing protocol");
+      const auto protocol =
+        guessprotocol(fasta, 10000, 0.1, 0.8, abismal_index,
+                      adaptor_sequence, reads_file, reads_file2, string());
+      if (protocol == 0)
+        wgbs_mode = true;
+      else if (protocol == 1)
+        pbat_mode = true;
+      else  // default is rpbat
+        rpbat_mode = true;
+      guessed_protocol = protocol == 0 ? "wgbs" : protocol == 1 ? "pbat" : "rpbat";
+      if (VERBOSE)
+        print_with_time("guessed protocol: " + guessed_protocol);
+    }
+
     // avoiding opening the stats output file until mapping is done
     se_map_stats se_stats;
     pe_map_stats pe_stats;
@@ -2678,39 +2881,81 @@ abismal(int argc, const char **argv) {
 
     if (!out.write(hdr)) throw runtime_error("error writing header");
 
-    if (reads_file2.empty()) {
-      if (GA_conversion || pbat_mode)
-        run_single_ended<a_rich, false>(adaptor_sequence, show_progress, allow_ambig, reads_file,
-                                        abismal_index, se_stats, hdr, out);
-      else if (random_pbat)
-        run_single_ended<t_rich, true>(adaptor_sequence, show_progress, allow_ambig, reads_file,
-                                       abismal_index, se_stats, hdr, out);
-      else
-        run_single_ended<t_rich, false>(adaptor_sequence, show_progress, allow_ambig, reads_file,
-                                        abismal_index, se_stats, hdr, out);
+    if (fasta) {
+      using TT = ReadLoaderFasta;
+      if (reads_file2.empty()) {
+        if (GA_conversion || pbat_mode)
+          run_single_ended<a_rich, false, TT>(
+            adaptor_sequence, show_progress, allow_ambig, reads_file,
+            abismal_index, se_stats, hdr, out);
+        else if (rpbat_mode)
+          run_single_ended<t_rich, true, TT>(adaptor_sequence, show_progress,
+                                             allow_ambig, reads_file,
+                                             abismal_index, se_stats, hdr, out);
+        else  // wgbs mode
+          run_single_ended<t_rich, false, TT>(
+            adaptor_sequence, show_progress, allow_ambig, reads_file,
+            abismal_index, se_stats, hdr, out);
+      }
+      else {
+        if (pbat_mode)
+          run_paired_ended<a_rich, false, TT>(
+            adaptor_sequence, show_progress, allow_ambig, reads_file,
+            reads_file2, abismal_index, pe_stats, hdr, out);
+        else if (rpbat_mode)
+          run_paired_ended<t_rich, true, TT>(
+            adaptor_sequence, show_progress, allow_ambig, reads_file,
+            reads_file2, abismal_index, pe_stats, hdr, out);
+        else  // wgbs mode
+          run_paired_ended<t_rich, false, TT>(
+            adaptor_sequence, show_progress, allow_ambig, reads_file,
+            reads_file2, abismal_index, pe_stats, hdr, out);
+      }
     }
     else {
-      if (pbat_mode)
-        run_paired_ended<a_rich, false>(adaptor_sequence, show_progress, allow_ambig, reads_file,
-                                        reads_file2, abismal_index, pe_stats,
-                                        hdr, out);
-      else if (random_pbat)
-        run_paired_ended<t_rich, true>(adaptor_sequence, show_progress, allow_ambig, reads_file,
-                                       reads_file2, abismal_index, pe_stats,
-                                       hdr, out);
-      else
-        run_paired_ended<t_rich, false>(adaptor_sequence, show_progress, allow_ambig, reads_file,
-                                        reads_file2, abismal_index, pe_stats,
-                                        hdr, out);
+      using TT = ReadLoaderFastq;
+      if (reads_file2.empty()) {
+        if (GA_conversion || pbat_mode)
+          run_single_ended<a_rich, false, TT>(
+            adaptor_sequence, show_progress, allow_ambig, reads_file,
+            abismal_index, se_stats, hdr, out);
+        else if (rpbat_mode)
+          run_single_ended<t_rich, true, TT>(adaptor_sequence, show_progress,
+                                             allow_ambig, reads_file,
+                                             abismal_index, se_stats, hdr, out);
+        else  // wgbs mode
+          run_single_ended<t_rich, false, TT>(
+            adaptor_sequence, show_progress, allow_ambig, reads_file,
+            abismal_index, se_stats, hdr, out);
+      }
+      else {
+        if (pbat_mode)
+          run_paired_ended<a_rich, false, TT>(
+            adaptor_sequence, show_progress, allow_ambig, reads_file,
+            reads_file2, abismal_index, pe_stats, hdr, out);
+        else if (rpbat_mode)
+          run_paired_ended<t_rich, true, TT>(
+            adaptor_sequence, show_progress, allow_ambig, reads_file,
+            reads_file2, abismal_index, pe_stats, hdr, out);
+        else  // wgbs mode
+          run_paired_ended<t_rich, false, TT>(
+            adaptor_sequence, show_progress, allow_ambig, reads_file,
+            reads_file2, abismal_index, pe_stats, hdr, out);
+      }
     }
 
     if (!stats_outfile.empty()) {
       std::ofstream stats_of(stats_outfile);
       if (stats_of)
-        stats_of << (reads_file2.empty() ? se_stats.tostring()
-                                         : pe_stats.tostring(allow_ambig));
+        stats_of << (reads_file2.empty() ? se_stats.tostring(guessed_protocol)
+                     : pe_stats.tostring(guessed_protocol, allow_ambig));
       else
-        cerr << "failed to open stats output file: " << stats_outfile << endl;
+        throw runtime_error("failed to open stats output file: " + stats_outfile);
+      if (remove_input_files) {
+        fs::remove(reads_file);
+        if (!reads_file2.empty())
+          fs::remove(reads_file2);
+      }
     }
   }
   catch (const runtime_error &e) {
