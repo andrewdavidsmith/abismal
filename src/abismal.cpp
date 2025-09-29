@@ -1236,7 +1236,7 @@ struct pe_map_stats {
     if (!protocol.empty())
       oss << "protocol: " << protocol << endl;
     oss << "pairs:" << endl
-        << t << "total_pairs: " << total_read_pairs << endl
+        << t << "total_reads: " << total_read_pairs << endl
         << t << "mapped:" << endl
         << t + t << "num_mapped: " << read_pairs_mapped << endl
         << t + t << "num_unique: " << read_pairs_mapped_unique << endl
